@@ -1,0 +1,8 @@
+[package]
+name = "nebula-firewall"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ipnet = "2.12.0"
+thiserror = { workspace = true }

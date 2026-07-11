@@ -1,0 +1,45 @@
+[package]
+name = "nebula-protocol-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+prost = "0.14.4"
+
+[dependencies.nebula-protocol]
+path = ".."
+
+[[bin]]
+name = "header"
+path = "fuzz_targets/header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cert_der"
+path = "fuzz_targets/cert_der.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "handshake_decode"
+path = "fuzz_targets/handshake_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lighthouse_decode"
+path = "fuzz_targets/lighthouse_decode.rs"
+test = false
+doc = false
+bench = false

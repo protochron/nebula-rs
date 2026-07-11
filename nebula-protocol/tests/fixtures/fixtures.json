@@ -1,0 +1,60 @@
+{
+  "ca": {
+    "name": "nebula-protocol test CA",
+    "groups": null,
+    "networks": [
+      "10.100.0.0/16"
+    ],
+    "is_ca": true,
+    "not_before": 1767225600,
+    "not_after": 1830297600,
+    "issuer": "",
+    "curve": "CURVE25519",
+    "fingerprint": "dc71e8c0fbbd54bffdeee9603adad3cde390ce602e867bcf9a259fe47fbd254c"
+  },
+  "host_a": {
+    "name": "host-a",
+    "groups": [
+      "test"
+    ],
+    "networks": [
+      "10.100.0.1/16"
+    ],
+    "is_ca": false,
+    "not_before": 1767225600,
+    "not_after": 1830297600,
+    "issuer": "dc71e8c0fbbd54bffdeee9603adad3cde390ce602e867bcf9a259fe47fbd254c",
+    "curve": "CURVE25519",
+    "fingerprint": "94b4e0eb5e2f64b7d20dc7256777f2539b42a13141507735b4e6ae7df82780f2"
+  },
+  "host_b": {
+    "name": "host-b",
+    "groups": [
+      "test"
+    ],
+    "networks": [
+      "10.100.0.2/16"
+    ],
+    "is_ca": false,
+    "not_before": 1767225600,
+    "not_after": 1830297600,
+    "issuer": "dc71e8c0fbbd54bffdeee9603adad3cde390ce602e867bcf9a259fe47fbd254c",
+    "curve": "CURVE25519",
+    "fingerprint": "f04eb90d1d21109dddcfe445d35313665b7e1915b1e7023caa50577d421ad1d1"
+  },
+  "expired": {
+    "name": "expired-host",
+    "groups": [
+      "test"
+    ],
+    "networks": [
+      "10.100.0.3/16"
+    ],
+    "is_ca": false,
+    "not_before": 1767225600,
+    "not_after": 1767229200,
+    "issuer": "dc71e8c0fbbd54bffdeee9603adad3cde390ce602e867bcf9a259fe47fbd254c",
+    "curve": "CURVE25519",
+    "fingerprint": "4b565e79eeebf95848f6e19d773dd0432229491ee14467ab164e67822500bbe0"
+  }
+}

@@ -1,0 +1,95 @@
+syntax = "proto3";
+package nebula;
+
+option go_package = "github.com/slackhq/nebula";
+
+message NebulaMeta {
+  enum MessageType {
+    None = 0;
+    HostQuery = 1;
+    HostQueryReply = 2;
+    HostUpdateNotification = 3;
+    HostMovedNotification = 4;
+    HostPunchNotification = 5;
+    HostWhoami = 6;
+    HostWhoamiReply = 7;
+    PathCheck = 8;
+    PathCheckReply = 9;
+    HostUpdateNotificationAck = 10;
+  }
+
+  MessageType Type = 1;
+  NebulaMetaDetails Details = 2;
+}
+
+message NebulaMetaDetails {
+  uint32 OldVpnAddr = 1 [deprecated = true];
+  Addr VpnAddr = 6;
+
+  repeated uint32 OldRelayVpnAddrs = 5 [deprecated = true];
+  repeated Addr RelayVpnAddrs = 7;
+
+  repeated V4AddrPort V4AddrPorts = 2;
+  repeated V6AddrPort V6AddrPorts = 4;
+  uint32 counter = 3;
+}
+
+message Addr {
+  uint64 Hi = 1;
+  uint64 Lo = 2;
+}
+
+message V4AddrPort {
+  uint32 Addr = 1;
+  uint32 Port = 2;
+}
+
+message V6AddrPort {
+  uint64 Hi = 1;
+  uint64 Lo = 2;
+  uint32 Port = 3;
+}
+
+message NebulaPing {
+  enum MessageType {
+		Ping = 0;
+		Reply = 1;
+	}
+
+	MessageType Type = 1;
+	uint64 Time = 2;
+}
+
+message NebulaHandshake {
+  NebulaHandshakeDetails Details = 1;
+  bytes Hmac = 2;
+}
+
+message NebulaHandshakeDetails {
+  bytes Cert = 1;
+  uint32 InitiatorIndex = 2;
+  uint32 ResponderIndex = 3;
+  uint64 Cookie = 4;
+  uint64 Time = 5;
+  uint32 CertVersion = 8;
+  // reserved for WIP multiport
+  reserved 6, 7;
+}
+
+message NebulaControl {
+  enum MessageType {
+    None = 0;
+    CreateRelayRequest = 1;
+    CreateRelayResponse = 2;
+  }
+  MessageType Type = 1;
+
+  uint32 InitiatorRelayIndex = 2;
+  uint32 ResponderRelayIndex = 3;
+
+  uint32 OldRelayToAddr = 4 [deprecated = true];
+  uint32 OldRelayFromAddr = 5 [deprecated = true];
+
+  Addr RelayToAddr = 6;
+  Addr RelayFromAddr = 7;
+}

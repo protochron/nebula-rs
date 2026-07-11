@@ -1,0 +1,32 @@
+[package]
+name = "nebula-firewall-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+ipnet = "2.12.0"
+
+[dependencies.nebula-firewall]
+path = ".."
+
+[[bin]]
+name = "fuzz_evaluate"
+path = "fuzz_targets/fuzz_evaluate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_add_rule"
+path = "fuzz_targets/fuzz_add_rule.rs"
+test = false
+doc = false
+bench = false

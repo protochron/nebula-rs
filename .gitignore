@@ -1,0 +1,5 @@
+/target
+.claude/settings.local.json
+
+# Local Superpowers planning docs (specs/plans) — not tracked
+**/docs/superpowers/

@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = ["nebula-protocol", "nebula-firewall"]
+
+[workspace.dependencies]
+thiserror = "2.0.18"
