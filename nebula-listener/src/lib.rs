@@ -9,3 +9,5 @@
 //! placed cleanly inside a network namespace and many can coexist in one
 //! process with no global state. See
 //! `docs/superpowers/specs/2026-07-11-nebula-listener-design.md`.
+
+pub mod packet;
