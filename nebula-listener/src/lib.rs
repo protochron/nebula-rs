@@ -13,3 +13,6 @@
 pub mod packet;
 pub mod tun;
 mod identity;
+mod listener;
+
+pub use listener::{Listener, ListenerConfig};
