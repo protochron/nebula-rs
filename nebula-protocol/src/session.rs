@@ -14,7 +14,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::timeout;
 
-use crate::cert::der::{Certificate, Curve};
+use crate::cert::der::{Certificate, Curve, Network};
 use crate::cert::verify::verify_host_cert;
 use crate::error::Error;
 use crate::handshake::{self, Cipher};
@@ -40,6 +40,9 @@ enum PeerState {
         transport: Transport,
         remote: SocketAddr,
         vpn_addr: IpAddr,
+        /// The peer's verified certificate, kept so the listener can build
+        /// a firewall `PeerIdentity` for it (name/groups/networks).
+        cert: Certificate,
         /// The *peer's* local index, stamped on the `remote_index` header
         /// field of every data packet we send them (nebula's
         /// `hostinfo.remoteIndexId`). Distinct from the key this session is
@@ -148,6 +151,7 @@ async fn handle_handshake(inner: &mut Inner, hdr: &Header, body: &[u8], from: So
                 transport: Transport::new(inner.cipher, keys.send_key, keys.recv_key),
                 remote: from,
                 vpn_addr,
+                cert: their_cert,
                 // The initiator's index — where our outbound data packets go.
                 remote_index: their_details.initiator_index,
             },
@@ -173,6 +177,7 @@ async fn handle_handshake(inner: &mut Inner, hdr: &Header, body: &[u8], from: So
                 transport: Transport::new(inner.cipher, keys.send_key, keys.recv_key),
                 remote: from,
                 vpn_addr,
+                cert: their_cert,
                 // The responder's index, learned from the stage-2 reply — where
                 // our outbound data packets go.
                 remote_index: their_details.responder_index,
@@ -248,6 +253,18 @@ pub struct Session {
     local_addr: SocketAddr,
 }
 
+/// The verified certificate identity of an established peer, in the plain
+/// shape nebula-listener converts into a `nebula_firewall::PeerIdentity`.
+/// Uses the cert crate's own `Network` type so `ipnet` stays out of
+/// nebula-protocol's dependency list — the listener does the conversion.
+#[derive(Clone, Debug)]
+pub struct PeerInfo {
+    pub name: String,
+    pub groups: Vec<String>,
+    pub networks: Vec<Network>,
+    pub unsafe_networks: Vec<Network>,
+}
+
 impl Session {
     pub async fn new(config: SessionConfig) -> Result<Self, Error> {
         let socket = UdpSocket::bind(config.bind_addr).await?;
@@ -305,6 +322,23 @@ impl Session {
 
     pub fn local_addr(&self) -> Result<SocketAddr, Error> {
         Ok(self.local_addr)
+    }
+
+    /// Returns the verified certificate identity of the established peer
+    /// reachable at `vpn_addr`, or `None` if no handshake has completed for
+    /// it yet.
+    pub async fn peer_info(&self, vpn_addr: IpAddr) -> Option<PeerInfo> {
+        let inner = self.inner.lock().await;
+        let index = *inner.index_by_vpn_addr.get(&vpn_addr)?;
+        let PeerState::Established { cert, .. } = inner.peers_by_index.get(&index)? else {
+            return None;
+        };
+        Some(PeerInfo {
+            name: cert.details.name.clone(),
+            groups: cert.details.groups.clone(),
+            networks: cert.details.networks.clone(),
+            unsafe_networks: cert.details.unsafe_networks.clone(),
+        })
     }
 
     async fn register_with_lighthouses(&self) -> Result<(), Error> {
