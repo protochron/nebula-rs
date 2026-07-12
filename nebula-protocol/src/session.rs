@@ -250,6 +250,23 @@ pub struct Session {
 
 impl Session {
     pub async fn new(config: SessionConfig) -> Result<Self, Error> {
+        let socket = UdpSocket::bind(config.bind_addr).await?;
+        Self::build(config, socket).await
+    }
+
+    /// Builds a `Session` around an already-bound `std::net::UdpSocket`.
+    ///
+    /// The socket's network namespace is fixed at the point its fd was
+    /// created; this constructor registers that fd with the *Session's*
+    /// tokio runtime via `from_std`, so the runtime never has to be in the
+    /// socket's netns. `config.bind_addr` is unused on this path.
+    pub async fn from_socket(config: SessionConfig, sock: std::net::UdpSocket) -> Result<Self, Error> {
+        sock.set_nonblocking(true)?;
+        let socket = UdpSocket::from_std(sock)?;
+        Self::build(config, socket).await
+    }
+
+    async fn build(config: SessionConfig, socket: UdpSocket) -> Result<Self, Error> {
         let ca_der = crate::cert::pem::decode(&config.ca_cert_pem, crate::cert::pem::CERTIFICATE_V2_BANNER)?;
         let ca_cert = Certificate::decode(&ca_der)?;
         let host_der = crate::cert::pem::decode(&config.host_cert_pem, crate::cert::pem::CERTIFICATE_V2_BANNER)?;
@@ -259,7 +276,7 @@ impl Session {
             key_bytes.as_slice().try_into().map_err(|_| Error::Pem("host private key is not 32 bytes".into()))?;
         let vpn_addr = host_cert.details.networks.first().ok_or(Error::CertNoNetworks)?.addr;
 
-        let socket = Arc::new(UdpSocket::bind(config.bind_addr).await?);
+        let socket = Arc::new(socket);
         let local_addr = socket.local_addr()?;
         let (inbox_tx, inbox_rx) = mpsc::unbounded_channel();
 
