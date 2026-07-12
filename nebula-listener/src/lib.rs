@@ -11,3 +11,4 @@
 //! `docs/superpowers/specs/2026-07-11-nebula-listener-design.md`.
 
 pub mod packet;
+mod identity;
