@@ -30,7 +30,12 @@ pub struct SessionConfig {
     pub host_key_pem: Vec<u8>,
     pub cipher: Cipher,
     pub bind_addr: SocketAddr,
-    pub lighthouses: Vec<SocketAddr>,
+    /// VPN addresses of this session's lighthouses (real nebula's
+    /// `lighthouse.hosts`) — their reachable UDP addresses must come from
+    /// `static_hosts` below, exactly like any other peer, since lighthouse
+    /// traffic is only ever sent over an authenticated, handshaked tunnel
+    /// (see `register_with_lighthouses`).
+    pub lighthouses: Vec<IpAddr>,
     pub static_hosts: Vec<(IpAddr, SocketAddr)>,
 }
 
@@ -58,7 +63,7 @@ struct Inner {
     host_private_key: [u8; 32],
     cipher: Cipher,
     vpn_addr: IpAddr,
-    lighthouses: Vec<SocketAddr>,
+    lighthouses: Vec<IpAddr>,
     known_addrs: HashMap<IpAddr, SocketAddr>,
     peers_by_index: HashMap<u32, PeerState>,
     index_by_vpn_addr: HashMap<IpAddr, u32>,
@@ -91,22 +96,6 @@ fn allocate_index(inner: &mut Inner) -> u32 {
             return candidate;
         }
     }
-}
-
-async fn send_lighthouse_packet(socket: &UdpSocket, to: SocketAddr, payload: &[u8]) -> Result<(), Error> {
-    let mut header_bytes = [0u8; header::LEN];
-    Header {
-        version: header::VERSION,
-        type_: header::message_type::LIGHTHOUSE,
-        subtype: 0,
-        remote_index: 0,
-        message_counter: 0,
-    }
-    .encode(&mut header_bytes);
-    let mut packet = header_bytes.to_vec();
-    packet.extend_from_slice(payload);
-    socket.send_to(&packet, to).await?;
-    Ok(())
 }
 
 async fn handle_handshake(inner: &mut Inner, hdr: &Header, body: &[u8], from: SocketAddr) {
@@ -204,6 +193,21 @@ fn handle_message(inner: &mut Inner, hdr: &Header, header_bytes: &[u8], body: &[
     let _ = inner.inbox_tx.send((*vpn_addr, out[..len].to_vec()));
 }
 
+/// Decrypts an incoming `LIGHTHOUSE`-type packet using the sender's
+/// established `Transport` — real nebula's lighthouse traffic is only ever
+/// authenticated inside a handshaked tunnel (`outside.go`'s `header.LightHouse`
+/// case calls `f.decrypt(hostinfo, ...)` before dispatching it), never sent
+/// or accepted as plaintext.
+fn handle_lighthouse_packet(inner: &mut Inner, hdr: &Header, header_bytes: &[u8], body: &[u8]) {
+    let Some(PeerState::Established { transport, .. }) = inner.peers_by_index.get_mut(&hdr.remote_index) else {
+        return;
+    };
+    let mut out = vec![0u8; body.len()];
+    let Ok(len) = transport.decrypt(hdr.message_counter, header_bytes, body, &mut out) else { return };
+    out.truncate(len);
+    handle_lighthouse(inner, &out[..len]);
+}
+
 fn handle_lighthouse(inner: &mut Inner, body: &[u8]) {
     let Ok(meta) = NebulaMeta::decode(body) else { return };
     if meta.r#type == LighthouseMessageType::HostQueryReply as i32
@@ -239,7 +243,7 @@ fn spawn_recv_loop(socket: Arc<UdpSocket>, inner: Arc<Mutex<Inner>>) {
                     handle_message(&mut inner_guard, &hdr, &header_bytes, &body);
                 }
                 t if t == header::message_type::LIGHTHOUSE => {
-                    handle_lighthouse(&mut inner_guard, &body);
+                    handle_lighthouse_packet(&mut inner_guard, &hdr, &header_bytes, &body);
                 }
                 _ => {}
             }
@@ -341,15 +345,24 @@ impl Session {
         })
     }
 
+    /// Handshakes with each configured lighthouse (their reachable UDP
+    /// address must come from `static_hosts`, resolved via the ordinary
+    /// `resolve` path) and sends this host's `HostUpdateNotification` as an
+    /// encrypted `LIGHTHOUSE`-type packet over that tunnel — matching real
+    /// nebula, which never accepts an unauthenticated lighthouse packet.
     async fn register_with_lighthouses(&self) -> Result<(), Error> {
-        let inner = self.inner.lock().await;
-        if inner.lighthouses.is_empty() {
+        let (lighthouses, vpn_addr) = {
+            let inner = self.inner.lock().await;
+            (inner.lighthouses.clone(), inner.vpn_addr)
+        };
+        if lighthouses.is_empty() {
             return Ok(());
         }
-        let meta = lighthouse::host_update_notification(inner.vpn_addr, &[self.local_addr]);
+        let meta = lighthouse::host_update_notification(vpn_addr, &[self.local_addr]);
         let payload = meta.encode_to_vec();
-        for lh in &inner.lighthouses {
-            send_lighthouse_packet(&inner.socket, *lh, &payload).await?;
+        for lh in lighthouses {
+            self.connect(lh).await?;
+            self.send_typed(lh, header::message_type::LIGHTHOUSE, &payload).await?;
         }
         Ok(())
     }
@@ -361,21 +374,21 @@ impl Session {
                 return Ok(*addr);
             }
         }
-        let rx = {
+        let (rx, lighthouses) = {
             let mut inner = self.inner.lock().await;
             let (tx, rx) = oneshot::channel();
             inner.lighthouse_waiters.insert(vpn_addr, tx);
-            let meta = lighthouse::host_query(vpn_addr);
-            let payload = meta.encode_to_vec();
-            for lh in inner.lighthouses.clone() {
-                let socket = inner.socket.clone();
-                let payload = payload.clone();
-                tokio::spawn(async move {
-                    let _ = send_lighthouse_packet(&socket, lh, &payload).await;
-                });
-            }
-            rx
+            (rx, inner.lighthouses.clone())
         };
+        let meta = lighthouse::host_query(vpn_addr);
+        let payload = meta.encode_to_vec();
+        for lh in lighthouses {
+            // Lighthouses are already established by `register_with_lighthouses`
+            // before a `Session` is ever handed out, so this send targets an
+            // existing tunnel; a failure here just means that lighthouse won't
+            // get a chance to answer, not that the whole resolve should abort.
+            let _ = self.send_typed(lh, header::message_type::LIGHTHOUSE, &payload).await;
+        }
         let addrs =
             timeout(Duration::from_secs(5), rx).await.map_err(|_| Error::PeerUnreachable(vpn_addr))?.map_err(|_| Error::PeerUnreachable(vpn_addr))?;
         addrs.first().copied().ok_or(Error::PeerUnreachable(vpn_addr))
@@ -417,6 +430,17 @@ impl Session {
     }
 
     pub async fn send(&self, vpn_addr: IpAddr, payload: &[u8]) -> Result<(), Error> {
+        self.send_typed(vpn_addr, header::message_type::MESSAGE, payload).await
+    }
+
+    /// Encrypts `payload` for the established peer at `vpn_addr` and sends
+    /// it tagged with wire header type `type_`. `send` (data) and
+    /// `register_with_lighthouses`/`resolve` (lighthouse control traffic)
+    /// share this: real nebula uses one `ConnectionState` — and one
+    /// monotonic counter — per peer regardless of packet type, so the
+    /// `Message` and `LightHouse` types sent to the same peer must reuse
+    /// the same `Transport`.
+    async fn send_typed(&self, vpn_addr: IpAddr, type_: u8, payload: &[u8]) -> Result<(), Error> {
         let (packet, remote, socket) = {
             let mut inner = self.inner.lock().await;
             // Our own local index — how we find the session.
@@ -438,7 +462,7 @@ impl Session {
             let mut header_bytes = [0u8; header::LEN];
             Header {
                 version: header::VERSION,
-                type_: header::message_type::MESSAGE,
+                type_,
                 subtype: 0,
                 remote_index: peer_index,
                 message_counter: counter,

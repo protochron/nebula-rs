@@ -37,8 +37,11 @@ fn parse_hosts(raw: &str) -> Vec<(IpAddr, SocketAddr)> {
         .collect()
 }
 
-fn parse_lighthouses(raw: &str) -> Vec<SocketAddr> {
-    raw.split(',').filter(|s| !s.trim().is_empty()).map(|s| s.trim().parse().expect("valid lighthouse addr")).collect()
+/// Lighthouses are configured by VPN address — their reachable UDP address
+/// comes from `NEBULA_STATIC_HOSTS` below, exactly like any other peer,
+/// since lighthouse traffic is only ever sent over an authenticated tunnel.
+fn parse_lighthouses(raw: &str) -> Vec<IpAddr> {
+    raw.split(',').filter(|s| !s.trim().is_empty()).map(|s| s.trim().parse().expect("valid lighthouse vpn addr")).collect()
 }
 
 #[tokio::main]

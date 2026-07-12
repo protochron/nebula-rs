@@ -44,7 +44,7 @@ ip netns exec "$NS" \
       NEBULA_KEY="$BUILD/rust-peer.key" \
       NEBULA_CIPHER="$CIPHER" \
       NEBULA_BIND="0.0.0.0:4244" \
-      NEBULA_LIGHTHOUSES="10.244.0.1:4242" \
+      NEBULA_LIGHTHOUSES="10.100.0.1" \
       NEBULA_STATIC_HOSTS="10.100.0.1=10.244.0.1:4242,10.100.0.2=10.244.0.1:4243" \
       NEBULA_TUN_NAME="nebula-rust" \
       NEBULA_TUN_ADDR="10.100.0.3/16" \

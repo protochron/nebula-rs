@@ -522,6 +522,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-listener"
+version = "0.1.0"
+dependencies = [
+ "ipnet",
+ "libc",
+ "nebula-firewall",
+ "nebula-protocol",
+ "tokio",
+]
+
+[[package]]
 name = "nebula-protocol"
 version = "0.1.0"
 dependencies = [

@@ -72,7 +72,7 @@ async fn handshake_and_icmp_echo_with_real_nebula() {
         host_key_pem: std::fs::read(build.join("rust-peer.key")).unwrap(),
         cipher: Cipher::AesGcm,
         bind_addr: "127.0.0.1:0".parse().unwrap(),
-        lighthouses: vec!["127.0.0.1:4242".parse().unwrap()],
+        lighthouses: vec![IpAddr::V4(Ipv4Addr::new(10, 100, 0, 1))],
         // Both the lighthouse (10.100.0.1) and host2 (10.100.0.2) are pinned
         // directly rather than relying on lighthouse-learned addresses: the
         // Docker harness runs both real-nebula containers with
