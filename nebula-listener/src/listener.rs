@@ -148,9 +148,19 @@ async fn tun_to_mesh(shared: Arc<Shared>) -> io::Result<()> {
         let Some(fw_pkt) = packet::parse(raw, false) else { continue };
         let dst = fw_pkt.remote_addr; // outbound: remote == destination vpn addr
 
-        // Ensure a tunnel exists before we can look the peer up.
-        if shared.session.peer_info(dst).await.is_none() && shared.session.connect(dst).await.is_err() {
-            continue;
+        // Ensure a tunnel exists before we can look the peer up. Multicast
+        // destinations (IPv6 router solicitation, mDNS, ...) are kernel
+        // housekeeping traffic a real tun interface emits on its own and
+        // never have a mesh peer — skip them rather than paying `connect`'s
+        // multi-second handshake timeout, which would otherwise stall this
+        // single sequential loop and head-of-line-block real traffic.
+        if shared.session.peer_info(dst).await.is_none() {
+            if dst.is_multicast() {
+                continue;
+            }
+            if shared.session.connect(dst).await.is_err() {
+                continue;
+            }
         }
         let Some(info) = shared.session.peer_info(dst).await else { continue };
         let peer = identity::peer_identity(&info, &shared.ca_name, &shared.ca_sha);

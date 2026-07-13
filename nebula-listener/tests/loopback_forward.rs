@@ -168,6 +168,99 @@ async fn packet_injected_into_node_a_tun_arrives_on_node_b_tun() {
     assert_eq!(&buf[16..20], &[10, 100, 0, 2]);
 }
 
+/// A real tun interface emits autonomous kernel traffic (IPv6 router
+/// solicitation, mDNS, ...) that has no mesh peer. `tun_to_mesh` must not
+/// pay `connect`'s multi-second handshake timeout for it — doing so would
+/// stall the loop's single sequential queue and head-of-line-block real
+/// traffic sitting right behind it.
+#[tokio::test]
+async fn multicast_destined_packets_do_not_block_real_traffic() {
+    let ca = fixture("ca.crt");
+    let a_vpn = IpAddr::V4(Ipv4Addr::new(10, 100, 0, 1));
+    let a_assigned: Vec<IpNet> = vec!["10.100.0.1/16".parse().unwrap()];
+    let b_assigned: Vec<IpNet> = vec!["10.100.0.2/16".parse().unwrap()];
+
+    let a_session = Session::new(SessionConfig {
+        ca_cert_pem: ca.clone(),
+        host_cert_pem: fixture("host-a.crt"),
+        host_key_pem: fixture("host-a.key"),
+        cipher: Cipher::AesGcm,
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        lighthouses: vec![],
+        static_hosts: vec![],
+    })
+    .await
+    .unwrap();
+    let a_local: SocketAddr = a_session.local_addr().unwrap();
+
+    let b_session = Session::new(SessionConfig {
+        ca_cert_pem: ca,
+        host_cert_pem: fixture("host-b.crt"),
+        host_key_pem: fixture("host-b.key"),
+        cipher: Cipher::AesGcm,
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        lighthouses: vec![],
+        static_hosts: vec![(a_vpn, a_local)],
+    })
+    .await
+    .unwrap();
+    b_session.connect(a_vpn).await.expect("B→A handshake");
+
+    let (a_tun_fd, a_tun_test) = fake_tun();
+    let (b_tun_fd, b_tun_test) = fake_tun();
+
+    let a_listener = Listener::new(
+        ListenerConfig {
+            firewall_rules: allow_any(a_assigned.clone()),
+            firewall_options: fw_options(),
+            assigned_networks: a_assigned,
+            unsafe_networks: vec![],
+            ca_name: "nebula-protocol interop CA".into(),
+            ca_sha: String::new(),
+        },
+        a_session,
+        a_tun_fd,
+    )
+    .unwrap();
+
+    let b_listener = Listener::new(
+        ListenerConfig {
+            firewall_rules: allow_any(b_assigned.clone()),
+            firewall_options: fw_options(),
+            assigned_networks: b_assigned,
+            unsafe_networks: vec![],
+            ca_name: "nebula-protocol interop CA".into(),
+            ca_sha: String::new(),
+        },
+        b_session,
+        b_tun_fd,
+    )
+    .unwrap();
+
+    tokio::spawn(async move { a_listener.run().await });
+    tokio::spawn(async move { b_listener.run().await });
+
+    // A bogus multicast-destined packet, then a real one right behind it.
+    a_tun_test
+        .send(&udp_packet(Ipv4Addr::new(10, 100, 0, 1), Ipv4Addr::new(224, 0, 0, 251)))
+        .unwrap();
+    a_tun_test
+        .send(&udp_packet(Ipv4Addr::new(10, 100, 0, 1), Ipv4Addr::new(10, 100, 0, 2)))
+        .unwrap();
+
+    // Well under connect()'s 5s handshake timeout: this only passes if the
+    // multicast packet didn't block the loop.
+    b_tun_test.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let mut buf = [0u8; 2048];
+    let n = tokio::task::spawn_blocking(move || b_tun_test.recv(&mut buf).map(|n| (n, buf)))
+        .await
+        .unwrap()
+        .expect("real packet must arrive promptly, not after connect()'s 5s timeout");
+    let (len, buf) = n;
+    assert!(len >= 28);
+    assert_eq!(&buf[16..20], &[10, 100, 0, 2]);
+}
+
 #[tokio::test]
 async fn aborting_run_releases_the_tun_fd() {
     let ca = fixture("ca.crt");
