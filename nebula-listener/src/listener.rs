@@ -70,6 +70,19 @@ impl Listener {
     pub async fn run(self) -> io::Result<()> {
         let up = tokio::spawn(tun_to_mesh(self.shared.clone()));
         let down = tokio::spawn(mesh_to_tun(self.shared.clone()));
+
+        // If this future is dropped/aborted (e.g. its task is cancelled),
+        // the spawned loops must not outlive it — they hold the tun fd and
+        // Session via `Shared`, and callers rely on drop-based teardown.
+        struct AbortOnDrop(tokio::task::AbortHandle);
+        impl Drop for AbortOnDrop {
+            fn drop(&mut self) {
+                self.0.abort();
+            }
+        }
+        let _up_guard = AbortOnDrop(up.abort_handle());
+        let _down_guard = AbortOnDrop(down.abort_handle());
+
         tokio::select! {
             r = up => r.map_err(io::Error::other)?,
             r = down => r.map_err(io::Error::other)?,

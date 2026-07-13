@@ -167,3 +167,55 @@ async fn packet_injected_into_node_a_tun_arrives_on_node_b_tun() {
     assert_eq!(&buf[12..16], &[10, 100, 0, 1]);
     assert_eq!(&buf[16..20], &[10, 100, 0, 2]);
 }
+
+#[tokio::test]
+async fn aborting_run_releases_the_tun_fd() {
+    let ca = fixture("ca.crt");
+    let assigned: Vec<IpNet> = vec!["10.100.0.1/16".parse().unwrap()];
+
+    let session = Session::new(SessionConfig {
+        ca_cert_pem: ca,
+        host_cert_pem: fixture("host-a.crt"),
+        host_key_pem: fixture("host-a.key"),
+        cipher: Cipher::AesGcm,
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        lighthouses: vec![],
+        static_hosts: vec![],
+    })
+    .await
+    .unwrap();
+
+    let (tun_fd, tun_test) = fake_tun();
+    let listener = Listener::new(
+        ListenerConfig {
+            firewall_rules: allow_any(assigned.clone()),
+            firewall_options: fw_options(),
+            assigned_networks: assigned,
+            unsafe_networks: vec![],
+            ca_name: "nebula-protocol interop CA".into(),
+            ca_sha: String::new(),
+        },
+        session,
+        tun_fd,
+    )
+    .unwrap();
+
+    let handle = tokio::spawn(listener.run());
+    // Let the forwarding loops start.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    handle.abort();
+
+    // Once the loops are aborted the listener half of the socketpair drops;
+    // sends from the test half must start failing (ECONNREFUSED/EPIPE).
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if tun_test.send(b"x").is_err() {
+            break; // released
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "listener kept the tun fd alive after run() was aborted"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
