@@ -1,6 +1,6 @@
 //! Convenience creation of a configured Linux tun interface, returning only
 //! the `OwnedFd` so the caller (running in the target netns) can hand it to
-//! `Listener`. Raw ioctls keep this dependency-light; IPv4-only for v1.
+//! `Listener`. Raw ioctls keep this dependency-light; IPv4 and IPv6.
 
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -19,6 +19,7 @@ const SIOCSIFNETMASK: libc::c_ulong = 0x891c;
 const SIOCSIFMTU: libc::c_ulong = 0x8922;
 const SIOCGIFFLAGS: libc::c_ulong = 0x8913;
 const SIOCSIFFLAGS: libc::c_ulong = 0x8914;
+const SIOCGIFINDEX: libc::c_ulong = 0x8933;
 
 // `struct ifreq` is 40 bytes: a 16-byte name followed by a 24-byte union.
 // Rather than reproduce libc's union, three fixed 40-byte layouts cover
@@ -41,6 +42,14 @@ struct IfReqInt {
     val: libc::c_int,
     _pad: [u8; 20],
 }
+// `struct in6_ifreq` from linux/ipv6.h — the inet6 SIOCSIFADDR keys off
+// ifindex rather than name.
+#[repr(C)]
+struct In6Ifreq {
+    addr: libc::in6_addr,
+    prefixlen: u32,
+    ifindex: libc::c_int,
+}
 
 fn write_name(dst: &mut [libc::c_char; 16], name: &str) -> io::Result<()> {
     let bytes = name.as_bytes();
@@ -62,16 +71,6 @@ fn sockaddr_in_v4(addr: std::net::Ipv4Addr) -> libc::sockaddr_in {
 }
 
 pub fn create(name: &str, addr: IpNet, mtu: u32) -> io::Result<OwnedFd> {
-    let v4 = match addr {
-        IpNet::V4(n) => n,
-        IpNet::V6(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "nebula-listener::tun::create supports IPv4 only; inject a preconfigured OwnedFd for IPv6",
-            ));
-        }
-    };
-
     // Open the tun clone device and register the interface.
     let tun_raw = unsafe { libc::open(c"/dev/net/tun".as_ptr(), libc::O_RDWR) };
     if tun_raw < 0 {
@@ -85,24 +84,59 @@ pub fn create(name: &str, addr: IpNet, mtu: u32) -> io::Result<OwnedFd> {
         return Err(io::Error::last_os_error());
     }
 
-    // A datagram control socket carries the address/mtu/flags ioctls.
-    let sock_raw = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+    // A datagram control socket carries the address/mtu/flags ioctls. The
+    // family must match the address being assigned: the kernel dispatches
+    // SIOCSIFADDR to inet vs. inet6 handlers by socket family.
+    let family = match addr {
+        IpNet::V4(_) => libc::AF_INET,
+        IpNet::V6(_) => libc::AF_INET6,
+    };
+    let sock_raw = unsafe { libc::socket(family, libc::SOCK_DGRAM, 0) };
     if sock_raw < 0 {
         return Err(io::Error::last_os_error());
     }
     let sock = unsafe { OwnedFd::from_raw_fd(sock_raw) };
     let sfd = sock.as_raw_fd();
 
-    let mut addr_req = IfReqSockaddr { name: [0; 16], addr: sockaddr_in_v4(v4.addr()), _pad: [0; 8] };
-    write_name(&mut addr_req.name, name)?;
-    if unsafe { libc::ioctl(sfd, SIOCSIFADDR, &mut addr_req as *mut _) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
+    match addr {
+        IpNet::V4(v4) => {
+            let mut addr_req =
+                IfReqSockaddr { name: [0; 16], addr: sockaddr_in_v4(v4.addr()), _pad: [0; 8] };
+            write_name(&mut addr_req.name, name)?;
+            if unsafe { libc::ioctl(sfd, SIOCSIFADDR, &mut addr_req as *mut _) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
 
-    let mut mask_req = IfReqSockaddr { name: [0; 16], addr: sockaddr_in_v4(v4.netmask()), _pad: [0; 8] };
-    write_name(&mut mask_req.name, name)?;
-    if unsafe { libc::ioctl(sfd, SIOCSIFNETMASK, &mut mask_req as *mut _) } < 0 {
-        return Err(io::Error::last_os_error());
+            let mut mask_req =
+                IfReqSockaddr { name: [0; 16], addr: sockaddr_in_v4(v4.netmask()), _pad: [0; 8] };
+            write_name(&mut mask_req.name, name)?;
+            if unsafe { libc::ioctl(sfd, SIOCSIFNETMASK, &mut mask_req as *mut _) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        IpNet::V6(v6) => {
+            // Disable duplicate address detection so a bind on the address
+            // is possible immediately after creation instead of after the
+            // tentative phase.
+            std::fs::write(format!("/proc/sys/net/ipv6/conf/{name}/accept_dad"), "0")?;
+
+            // The inet6 SIOCSIFADDR takes an in6_ifreq keyed by ifindex,
+            // not name.
+            let mut idx_req = IfReqInt { name: [0; 16], val: 0, _pad: [0; 20] };
+            write_name(&mut idx_req.name, name)?;
+            if unsafe { libc::ioctl(sfd, SIOCGIFINDEX, &mut idx_req as *mut _) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            let mut addr_req = In6Ifreq {
+                addr: libc::in6_addr { s6_addr: v6.addr().octets() },
+                prefixlen: u32::from(v6.prefix_len()),
+                ifindex: idx_req.val,
+            };
+            if unsafe { libc::ioctl(sfd, SIOCSIFADDR, &mut addr_req as *mut _) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
     }
 
     let mut mtu_req = IfReqInt { name: [0; 16], val: mtu as libc::c_int, _pad: [0; 20] };
@@ -129,10 +163,14 @@ pub fn create(name: &str, addr: IpNet, mtu: u32) -> io::Result<OwnedFd> {
 mod tests {
     use super::*;
 
+    // Actually creating a tun needs CAP_NET_ADMIN; run explicitly as root:
+    //   sudo -E cargo test -p nebula-listener --lib tun::tests::creates_a_real_v6 -- --ignored --nocapture
     #[test]
-    fn rejects_ipv6_address() {
-        let err = create("nbdummy0", "fd00::1/64".parse().unwrap(), 1300).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+    #[ignore]
+    fn creates_a_real_v6_tun_when_privileged() {
+        let fd = create("nbtest6", "fd00:9::1/64".parse().unwrap(), 1300)
+            .expect("IPv6 tun creation should succeed as root");
+        assert!(fd.as_raw_fd() >= 0);
     }
 
     #[test]
