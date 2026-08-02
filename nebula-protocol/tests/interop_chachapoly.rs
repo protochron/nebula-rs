@@ -1,6 +1,6 @@
 //! Real-nebula interop test (ChaChaPoly): proves nebula-protocol can
 //! complete a handshake and exchange an IP packet with the actual Go
-//! `nebula` v1.10.3 binary using the ChaChaPoly cipher (and its
+//! `nebula` v1.11.0 binary using the ChaChaPoly cipher (and its
 //! little-endian nonce path — see the module-level comment in
 //! `transport`), not just AES-GCM. Requires Docker.
 //!
@@ -85,27 +85,51 @@ async fn handshake_and_icmp_echo_with_real_nebula_chachapoly() {
         // configured to listen on, not necessarily the exact loopback port
         // this test needs — pinning both here removes that as a variable.
         static_hosts: vec![
-            (IpAddr::V4(Ipv4Addr::new(10, 100, 0, 1)), "127.0.0.1:4242".parse::<SocketAddr>().unwrap()),
-            (IpAddr::V4(Ipv4Addr::new(10, 100, 0, 2)), "127.0.0.1:4243".parse::<SocketAddr>().unwrap()),
+            (
+                IpAddr::V4(Ipv4Addr::new(10, 100, 0, 1)),
+                "127.0.0.1:4242".parse::<SocketAddr>().unwrap(),
+            ),
+            (
+                IpAddr::V4(Ipv4Addr::new(10, 100, 0, 2)),
+                "127.0.0.1:4243".parse::<SocketAddr>().unwrap(),
+            ),
         ],
     })
     .await
     .expect("session should start");
 
     let host2 = IpAddr::V4(Ipv4Addr::new(10, 100, 0, 2));
-    session.connect(host2).await.expect("handshake with real nebula host2 should complete");
+    session
+        .connect(host2)
+        .await
+        .expect("handshake with real nebula host2 should complete");
 
     let rust_peer = Ipv4Addr::new(10, 100, 0, 3);
     let echo = build_icmp_echo_request(rust_peer, Ipv4Addr::new(10, 100, 0, 2), 1, 1);
-    session.send(host2, &echo).await.expect("send should succeed");
+    session
+        .send(host2, &echo)
+        .await
+        .expect("send should succeed");
 
     let (from, reply) = tokio::time::timeout(Duration::from_secs(5), session.recv())
         .await
         .expect("should receive an ICMP echo reply within 5s")
         .expect("recv should succeed");
     assert_eq!(from, host2);
-    assert!(reply.len() >= 21, "reply too short to be an IP+ICMP packet: {} bytes", reply.len());
-    assert_eq!(reply[20], 0, "expected ICMP type 0 (echo reply), got {}", reply[20]);
+    assert!(
+        reply.len() >= 21,
+        "reply too short to be an IP+ICMP packet: {} bytes",
+        reply.len()
+    );
+    assert_eq!(
+        reply[20], 0,
+        "expected ICMP type 0 (echo reply), got {}",
+        reply[20]
+    );
 
-    Command::new("bash").arg("cleanup.sh").current_dir(&harness).status().ok();
+    Command::new("bash")
+        .arg("cleanup.sh")
+        .current_dir(&harness)
+        .status()
+        .ok();
 }

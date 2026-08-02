@@ -1,9 +1,21 @@
 #!/bin/bash
 set -e -x
 
-VENDORED_NEBULA="/tmp/github.com/slackhq/nebula@v1.10.3"
+# The upstream release these tests prove interop against. Bump this and the
+# module docs in tests/interop_*.rs together.
+NEBULA_VERSION="${NEBULA_VERSION:-v1.11.0}"
+VENDORED_NEBULA="${VENDORED_NEBULA:-/tmp/github.com/slackhq/nebula@$NEBULA_VERSION}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CIPHER="${CIPHER:-aes}"
+
+# Fetch the tag if it isn't vendored yet. Without this the `go build` below
+# fails with a bare "no such file or directory" that reads like a toolchain
+# problem rather than a missing checkout.
+if [ ! -d "$VENDORED_NEBULA" ]; then
+    mkdir -p "$(dirname "$VENDORED_NEBULA")"
+    git clone --depth 1 --branch "$NEBULA_VERSION" \
+        https://github.com/slackhq/nebula.git "$VENDORED_NEBULA"
+fi
 
 rm -rf "$HERE/build"
 mkdir -p "$HERE/build"
