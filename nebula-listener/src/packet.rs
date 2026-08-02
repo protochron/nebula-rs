@@ -103,20 +103,54 @@ fn parse_ipv4(raw: &[u8]) -> Option<FiveTuple> {
 
     // Ports live in the L4 header, present only on the first fragment
     // (offset 0) of a TCP/UDP packet.
-    let (src_port, dst_port) = if frag_offset == 0 && matches!(protocol, Protocol::Tcp | Protocol::Udp) {
-        read_ports(&raw[ihl..])
-    } else {
-        (0, 0)
-    };
+    let (src_port, dst_port) =
+        if frag_offset == 0 && matches!(protocol, Protocol::Tcp | Protocol::Udp) {
+            read_ports(&raw[ihl..])
+        } else {
+            (0, 0)
+        };
 
     // Unlike ICMPv6, every ICMPv4 type has the identifier field at the same
     // offset, so Go reads it unconditionally here.
     let icmp_identifier = (frag_offset == 0 && protocol == Protocol::Icmp)
         .then(|| u16::from_be_bytes([raw[ihl + 4], raw[ihl + 5]]));
 
-    Some(FiveTuple { src, dst, protocol, src_port, dst_port, icmp_identifier, fragment })
+    Some(FiveTuple {
+        src,
+        dst,
+        protocol,
+        src_port,
+        dst_port,
+        icmp_identifier,
+        fragment,
+    })
 }
 
+// IPv6 next-header numbers the chain walk treats specially. These are raw
+// wire numbers rather than `Protocol` values on purpose: `Protocol::from(0)`
+// is `Protocol::Any`, which would make the Hop-by-Hop arm read as a match on
+// "any protocol". Hop-by-Hop (0), Routing (43) and Destination-Options (60)
+// need no constants — they use the standard length encoding and so fall
+// through to the default arm.
+const NH_TCP: u8 = 6;
+const NH_UDP: u8 = 17;
+const NH_FRAGMENT: u8 = 44;
+const NH_ESP: u8 = 50;
+const NH_AH: u8 = 51;
+const NH_ICMPV6: u8 = 58;
+const NH_NO_NEXT: u8 = 59;
+
+/// Walks the IPv6 extension-header chain to the upper-layer header, mirroring
+/// Go nebula's `parseV6` (v1.11.0). The firewall has to land on exactly the
+/// offset the host's own stack will: if it stops short, it reads
+/// attacker-controlled option bytes as the transport header and filters on
+/// the wrong protocol and ports.
+///
+/// Every length computation here is done in `usize`. Doing it in `u8` — as
+/// nebula did before #1789 — lets a header with a length field of 255 wrap
+/// to 0, which then clamps to the 8-byte minimum and lands the walk ~2KB
+/// early. That was a firewall port/proto bypass upstream; see
+/// `ipv6_max_length_extension_header_does_not_overflow`.
 fn parse_ipv6(raw: &[u8]) -> Option<FiveTuple> {
     if raw.len() < 40 {
         return None;
@@ -128,63 +162,92 @@ fn parse_ipv6(raw: &[u8]) -> Option<FiveTuple> {
     let src = IpAddr::V6(Ipv6Addr::from(src_octets));
     let dst = IpAddr::V6(Ipv6Addr::from(dst_octets));
 
-    let mut next_header = raw[6];
+    let terminal = |protocol, src_port, dst_port, icmp_identifier, fragment| {
+        Some(FiveTuple {
+            src,
+            dst,
+            protocol,
+            src_port,
+            dst_port,
+            icmp_identifier,
+            fragment,
+        })
+    };
+
+    // `proto_at` indexes the byte naming the *next* header — initially the
+    // fixed header's Next Header field, thereafter the first byte of each
+    // extension header. `offset` is where that named header starts.
+    let mut proto_at = 6usize;
     let mut offset = 40usize;
-    let mut fragment = false;
 
-    // Best-effort: handle a single Fragment extension header (44) directly
-    // after the fixed header; deeper ext-header chains are out of scope.
-    if next_header == 44 {
-        if raw.len() < offset + 8 {
-            return None;
-        }
-        fragment = true;
-        // Only the first fragment carries the L4 header. Past that, the bytes
-        // after the fragment header are payload continuation, so reading them
-        // as ports (or as an ICMP identifier) would key conntrack on garbage
-        // and give every later fragment its own entry.
-        let frag_offset = u16::from_be_bytes([raw[offset + 2], raw[offset + 3]]) & !0x7;
-        if frag_offset != 0 {
-            let protocol = Protocol::from(raw[offset]);
-            return Some(FiveTuple {
-                src,
-                dst,
-                protocol,
-                src_port: 0,
-                dst_port: 0,
-                icmp_identifier: None,
-                fragment,
-            });
-        }
-        next_header = raw[offset]; // inner protocol
-        offset += 8;
+    loop {
+        let next_header = *raw.get(proto_at)?;
+        let protocol = Protocol::from(next_header);
+
+        // How far past `offset` the following header starts. The terminal
+        // cases return instead of setting this.
+        let advance = match next_header {
+            // Encrypted from here on, or explicitly nothing follows: there is
+            // no transport header to find.
+            NH_ESP | NH_NO_NEXT => return terminal(protocol, 0, 0, None, false),
+
+            NH_ICMPV6 => {
+                if raw.len() < offset + 6 {
+                    return None;
+                }
+                // Unlike ICMPv4, only echo request (128) and echo reply (129)
+                // carry an identifier; other types have something else in
+                // those bytes, so reading it would key conntrack on garbage.
+                //
+                // Note: Go reads the *code* byte (`data[offset+1]`) rather
+                // than the type at `data[offset]`, so upstream never actually
+                // extracts the identifier for real echo traffic — its test
+                // masks this by building packets with 128 in the code byte.
+                // We read the type.
+                let id = matches!(raw[offset], 128 | 129)
+                    .then(|| u16::from_be_bytes([raw[offset + 4], raw[offset + 5]]));
+                return terminal(protocol, 0, 0, id, false);
+            }
+
+            NH_TCP | NH_UDP => {
+                if raw.len() < offset + 4 {
+                    return None;
+                }
+                let (src_port, dst_port) = read_ports(&raw[offset..]);
+                return terminal(protocol, src_port, dst_port, None, false);
+            }
+
+            NH_FRAGMENT => {
+                if raw.len() < offset + 8 {
+                    return None;
+                }
+                // Only the first fragment carries the transport header. Past
+                // that, the following bytes are payload continuation, so
+                // reading them as ports would give every fragment its own
+                // conntrack key. Like parseV4, `fragment` keys off the offset
+                // alone, so a first fragment is not flagged as one.
+                let frag_offset = u16::from_be_bytes([raw[offset + 2], raw[offset + 3]]) & !0x7;
+                if frag_offset != 0 {
+                    return terminal(Protocol::from(raw[offset]), 0, 0, None, true);
+                }
+                8 // fragment headers are always 8 bytes
+            }
+
+            // Authentication headers count in 4-byte units and exclude the
+            // first 8 bytes, unlike every other extension header.
+            NH_AH => (*raw.get(offset + 1)? as usize + 2) << 2,
+
+            // Hop-by-Hop, Routing, Destination-Options and anything else
+            // using the standard "length in 8-byte units, excluding the first
+            // 8" encoding.
+            _ => (*raw.get(offset + 1)? as usize + 1) << 3,
+        };
+
+        // Each extension header is at least 8 bytes, so `offset` strictly
+        // increases and the walk terminates once it runs past the buffer.
+        proto_at = offset;
+        offset += advance;
     }
-
-    let protocol = Protocol::from(next_header);
-    let (src_port, dst_port) = if matches!(protocol, Protocol::Tcp | Protocol::Udp) {
-        read_ports(raw.get(offset..)?)
-    } else {
-        (0, 0)
-    };
-
-    // Unlike ICMPv4, only echo request (128) and echo reply (129) carry an
-    // identifier; every other ICMPv6 type has something else in those bytes.
-    //
-    // Note: Go reads the *code* byte (`data[offset+1]`) here rather than the
-    // type at `data[offset]`, so upstream never actually extracts the
-    // identifier for real echo traffic — its test happens to build packets
-    // with 128 in the code byte, which masks the bug. We read the type.
-    let icmp_identifier = if protocol == Protocol::IcmpV6 {
-        if raw.len() < offset + 6 {
-            return None;
-        }
-        matches!(raw[offset], 128 | 129)
-            .then(|| u16::from_be_bytes([raw[offset + 4], raw[offset + 5]]))
-    } else {
-        None
-    };
-
-    Some(FiveTuple { src, dst, protocol, src_port, dst_port, icmp_identifier, fragment })
 }
 
 #[cfg(test)]
@@ -377,19 +440,153 @@ mod tests {
     }
 
     #[test]
-    fn ipv6_fragment_header_marks_fragment_and_reads_inner_protocol() {
+    fn ipv6_first_fragment_reads_the_transport_header() {
         // Fragment ext header (next_header=44): 8 bytes
         // [inner_nh, reserved, frag_off_hi, frag_off_lo, id x4], then TCP ports.
+        // Offset 0 means this is the first fragment, so the transport header is
+        // present and gets parsed — and, matching parseV4 (where Fragment keys
+        // off the offset alone), it is not flagged as a fragment.
         let src = [0xfd; 16];
         let dst = [0xfe; 16];
         let mut payload = vec![6u8, 0, 0, 0, 0, 0, 0, 0]; // inner_nh=6 (TCP)
         payload.extend_from_slice(&ports(1234, 80));
         let raw = ipv6(44, src, dst, &payload);
         let pkt = parse(&raw, false).unwrap();
-        assert!(pkt.fragment);
+        assert!(!pkt.fragment);
         assert_eq!(pkt.protocol, Protocol::Tcp);
         assert_eq!(pkt.local_port, 1234);
         assert_eq!(pkt.remote_port, 80);
+    }
+
+    /// A generic IPv6 extension header padded out to `total` bytes.
+    /// Hop-by-Hop/Routing/Destination-Options encode `(len_field + 1) * 8`
+    /// bytes; AH encodes `(len_field + 2) * 4`.
+    fn ext_header(next_header: u8, len_field: u8, total: usize) -> Vec<u8> {
+        let mut v = vec![next_header, len_field];
+        v.resize(total, 0);
+        v
+    }
+
+    #[test]
+    fn ipv6_hop_by_hop_header_is_traversed_to_the_transport_header() {
+        // Hop-by-Hop (0) is the single most common extension header — MLD and
+        // jumbograms both use it. Treating it as the upper-layer protocol
+        // means dropping that traffic outright.
+        let mut payload = ext_header(6, 0, 8); // next=TCP, 8 bytes
+        payload.extend_from_slice(&ports(1234, 80));
+        let raw = ipv6(0, [0xfd; 16], [0xfe; 16], &payload);
+
+        let pkt = parse(&raw, false).unwrap();
+        assert_eq!(pkt.protocol, Protocol::Tcp);
+        assert_eq!(pkt.local_port, 1234);
+        assert_eq!(pkt.remote_port, 80);
+    }
+
+    #[test]
+    fn ipv6_routing_and_destination_options_headers_are_traversed() {
+        for nh in [43u8, 60] {
+            let mut payload = ext_header(17, 1, 16); // next=UDP, (1+1)*8 = 16 bytes
+            payload.extend_from_slice(&ports(5353, 53));
+            let raw = ipv6(nh, [0xfd; 16], [0xfe; 16], &payload);
+
+            let pkt = parse(&raw, false).unwrap();
+            assert_eq!(pkt.protocol, Protocol::Udp, "next header {nh}");
+            assert_eq!(pkt.local_port, 5353, "next header {nh}");
+            assert_eq!(pkt.remote_port, 53, "next header {nh}");
+        }
+    }
+
+    #[test]
+    fn ipv6_auth_header_length_is_in_four_byte_units() {
+        // AH (51) is the one header whose length field means something else:
+        // (len + 2) * 4 rather than (len + 1) * 8. Using the wrong unit lands
+        // the walk in the middle of the AH payload.
+        let mut payload = ext_header(6, 4, 24); // next=TCP, (4+2)*4 = 24 bytes
+        payload.extend_from_slice(&ports(1234, 80));
+        let raw = ipv6(51, [0xfd; 16], [0xfe; 16], &payload);
+
+        let pkt = parse(&raw, false).unwrap();
+        assert_eq!(pkt.protocol, Protocol::Tcp);
+        assert_eq!(pkt.local_port, 1234);
+        assert_eq!(pkt.remote_port, 80);
+    }
+
+    #[test]
+    fn ipv6_chained_extension_headers_are_all_traversed() {
+        let mut payload = ext_header(60, 0, 8); // hop-by-hop -> dest-opts
+        payload.extend(ext_header(44, 0, 8)); // dest-opts -> fragment
+        payload.extend_from_slice(&[6u8, 0, 0, 0, 0, 0, 0, 0]); // fragment -> TCP, offset 0
+        payload.extend_from_slice(&ports(1234, 80));
+        let raw = ipv6(0, [0xfd; 16], [0xfe; 16], &payload);
+
+        let pkt = parse(&raw, false).unwrap();
+        assert_eq!(pkt.protocol, Protocol::Tcp);
+        assert_eq!(pkt.local_port, 1234);
+        assert_eq!(pkt.remote_port, 80);
+    }
+
+    #[test]
+    fn ipv6_max_length_extension_header_does_not_overflow() {
+        // Regression test for the class of bug nebula fixed in #1789. A
+        // Destination-Options header with len 255 spans (255+1)*8 = 2048
+        // bytes, so the real transport header sits at 40 + 2048 = 2088.
+        // Computing the advance in u8 wraps to 0 (then clamps to 8), landing
+        // the walk on attacker-controlled option bytes ~2KB early while the
+        // host OS parses the real header — a firewall port/proto bypass.
+        const EXT_LEN: usize = 2048;
+        const FORGED_AT: usize = 8; // where a wrapped+clamped walk would land
+
+        let mut payload = ext_header(6, 255, EXT_LEN); // next=TCP
+        payload[FORGED_AT + 2..FORGED_AT + 4].copy_from_slice(&443u16.to_be_bytes());
+        payload.extend_from_slice(&ports(1234, 22));
+        let raw = ipv6(60, [0xfd; 16], [0xfe; 16], &payload);
+
+        let pkt = parse(&raw, true).unwrap();
+        assert_eq!(pkt.protocol, Protocol::Tcp);
+        assert_eq!(
+            pkt.local_port, 22,
+            "must parse the real transport header, not the overflowed offset"
+        );
+    }
+
+    #[test]
+    fn ipv6_extension_header_before_icmpv6_still_finds_the_identifier() {
+        let mut payload = ext_header(58, 0, 8); // next=ICMPv6
+        payload.extend(icmp(128, 0xcafe, 1));
+        let raw = ipv6(0, [0xfd; 16], [0xfe; 16], &payload);
+
+        let pkt = parse(&raw, false).unwrap();
+        assert_eq!(pkt.protocol, Protocol::IcmpV6);
+        assert_eq!(pkt.remote_port, 0xcafe);
+    }
+
+    #[test]
+    fn ipv6_esp_and_no_next_header_terminate_the_walk_without_ports() {
+        // ESP (50) is encrypted past this point and 59 means "nothing
+        // follows", so neither has a transport header to read.
+        for nh in [50u8, 59] {
+            let raw = ipv6(nh, [0xfd; 16], [0xfe; 16], &ports(1234, 80));
+            let pkt = parse(&raw, false).unwrap();
+            assert_eq!(pkt.protocol, Protocol::Other(nh), "next header {nh}");
+            assert_eq!(pkt.local_port, 0, "next header {nh}");
+            assert_eq!(pkt.remote_port, 0, "next header {nh}");
+        }
+    }
+
+    #[test]
+    fn ipv6_extension_header_chain_running_past_the_buffer_is_rejected() {
+        // Header claims (10+1)*8 = 88 bytes but the packet ends well before
+        // the transport header it points at.
+        let payload = ext_header(6, 10, 16);
+        let raw = ipv6(0, [0xfd; 16], [0xfe; 16], &payload);
+        assert!(parse(&raw, false).is_none());
+    }
+
+    #[test]
+    fn ipv6_truncated_extension_header_is_rejected() {
+        // Only the next-header byte present; the length byte is missing.
+        let raw = ipv6(0, [0xfd; 16], [0xfe; 16], &[6u8]);
+        assert!(parse(&raw, false).is_none());
     }
 
     #[test]
