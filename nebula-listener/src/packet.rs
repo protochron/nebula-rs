@@ -74,9 +74,12 @@ fn parse_ipv4(raw: &[u8]) -> Option<FiveTuple> {
     }
     let proto_num = raw[9];
     let frag_word = u16::from_be_bytes([raw[6], raw[7]]);
-    let more_fragments = frag_word & 0x2000 != 0;
+    // Keyed off the fragment offset alone, deliberately ignoring the MF bit:
+    // a first fragment (MF set, offset 0) still carries the transport header,
+    // so it is matched on its real ports rather than against the
+    // PORT_FRAGMENT table. Matches Go's parseV4 and parse_ipv6 below.
     let frag_offset = frag_word & 0x1fff;
-    let fragment = more_fragments || frag_offset != 0;
+    let fragment = frag_offset != 0;
 
     let src = IpAddr::V4(Ipv4Addr::new(raw[12], raw[13], raw[14], raw[15]));
     let dst = IpAddr::V4(Ipv4Addr::new(raw[16], raw[17], raw[18], raw[19]));
@@ -354,11 +357,32 @@ mod tests {
     }
 
     #[test]
-    fn ipv4_more_fragments_flag_marks_fragment() {
-        // MF bit (0x2000) set; ports still readable on the first fragment.
+    fn ipv4_first_fragment_is_not_flagged_and_matches_on_its_real_ports() {
+        // MF set, offset 0: the transport header is present, so `fragment`
+        // keys off the offset alone (matching Go's parseV4 and our parse_ipv6)
+        // and the real ports are what rule matching sees.
+        //
+        // Folding the MF bit in here instead sends the first fragment to the
+        // PORT_FRAGMENT table, which breaks both ways: with port-specific
+        // rules and no fragment rule it is dropped outright, and with a
+        // fragment rule present it is allowed regardless of its port — and
+        // since the first fragment carries the L4 header and the host
+        // reassembles, that is a bypass to a denied port.
         let raw = ipv4(6, [10, 0, 0, 1], [10, 0, 0, 2], 0x2000, &ports(1111, 443));
         let pkt = parse(&raw, false).unwrap();
+        assert!(!pkt.fragment);
+        assert_eq!(pkt.local_port, 1111);
+        assert_eq!(pkt.remote_port, 443);
+    }
+
+    #[test]
+    fn ipv4_middle_fragment_is_still_flagged() {
+        // MF set *and* a non-zero offset — no transport header here.
+        let raw = ipv4(6, [10, 0, 0, 1], [10, 0, 0, 2], 0x2025, &[]);
+        let pkt = parse(&raw, false).unwrap();
         assert!(pkt.fragment);
+        assert_eq!(pkt.local_port, 0);
+        assert_eq!(pkt.remote_port, 0);
     }
 
     #[test]
