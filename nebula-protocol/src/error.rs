@@ -47,6 +47,9 @@ pub enum Error {
     #[error("handshake failed: {0}")]
     HandshakeFailed(String),
 
+    #[error("handshake carried a zero peer index")]
+    HandshakeInvalidRemoteIndex,
+
     #[error("peer unreachable: no known address for {0}")]
     PeerUnreachable(std::net::IpAddr),
 

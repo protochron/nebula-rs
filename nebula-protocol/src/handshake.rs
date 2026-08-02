@@ -117,6 +117,14 @@ pub fn respond(
     let their_details = stage0
         .details
         .ok_or_else(|| Error::HandshakeFailed("stage 0 message had no details".into()))?;
+    // A present-but-zero index is not a usable tunnel identifier: we'd stamp
+    // it on every data packet we send back and the peer could never route
+    // them. `details` being present doesn't imply the index was set — `time`
+    // alone satisfies that — so check it explicitly, matching
+    // handshake/machine.go's ErrInvalidRemoteIndex (v1.11.0, #1756).
+    if their_details.initiator_index == 0 {
+        return Err(Error::HandshakeInvalidRemoteIndex);
+    }
 
     let reply = NebulaHandshake {
         details: Some(NebulaHandshakeDetails {
@@ -154,6 +162,10 @@ pub fn finish_initiator(
     let details = handshake
         .details
         .ok_or_else(|| Error::HandshakeFailed("stage 2 message had no details".into()))?;
+    // Same reasoning as `respond`, for the index the responder allocated.
+    if details.responder_index == 0 {
+        return Err(Error::HandshakeInvalidRemoteIndex);
+    }
 
     let keys = split_keys(&mut hs)?;
     Ok((details, keys))
@@ -207,6 +219,42 @@ mod tests {
         let mut plaintext = vec![0u8; 128];
         let plen = responder_transport.decrypt(counter, aad, &ciphertext[..len], &mut plaintext).unwrap();
         assert_eq!(&plaintext[..plen], b"hello");
+    }
+
+    #[test]
+    fn responder_rejects_stage0_with_a_zero_initiator_index() {
+        // A peer index of 0 is never allocated (see session::allocate_index),
+        // and nebula's own handshake machine rejects it outright — the
+        // payload-presence check upstream is satisfiable by `time` alone, so a
+        // zero index can otherwise ride along in an otherwise well-formed
+        // payload. Accepting it would leave us stamping `remote_index: 0` on
+        // every data packet we send this peer, which it can't route.
+        // Matches handshake/machine.go's ErrInvalidRemoteIndex (v1.11.0, #1756).
+        let (initiator_key, _) = keypair();
+        let (responder_key, _) = keypair();
+        let (_, stage0_msg) = stage0(Cipher::AesGcm, &initiator_key, b"a".to_vec(), 0).unwrap();
+
+        // `unwrap_err` would require `Debug` on `SplitKeys` (raw transport
+        // keys) purely to satisfy a test — match the error out instead.
+        let Err(err) = respond(Cipher::AesGcm, &responder_key, b"b".to_vec(), 99, &stage0_msg) else {
+            panic!("responder accepted a zero initiator index");
+        };
+        assert!(matches!(err, Error::HandshakeInvalidRemoteIndex));
+    }
+
+    #[test]
+    fn initiator_rejects_stage2_with_a_zero_responder_index() {
+        let (initiator_key, _) = keypair();
+        let (responder_key, _) = keypair();
+        let (hs, stage0_msg) = stage0(Cipher::AesGcm, &initiator_key, b"a".to_vec(), 42).unwrap();
+        // A responder that hands back index 0 is equally unusable.
+        let (_, stage2_msg, _) =
+            respond(Cipher::AesGcm, &responder_key, b"b".to_vec(), 0, &stage0_msg).unwrap();
+
+        let Err(err) = finish_initiator(hs, &stage2_msg) else {
+            panic!("initiator accepted a zero responder index");
+        };
+        assert!(matches!(err, Error::HandshakeInvalidRemoteIndex));
     }
 
     #[test]
