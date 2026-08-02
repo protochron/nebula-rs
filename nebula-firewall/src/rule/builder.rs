@@ -44,6 +44,11 @@ pub enum RuleWarning {
     HostAnyShadowsCidr { incoming: bool, cidr: IpNet },
     GroupsAnyShadowsHost { incoming: bool, host: String },
     GroupsAnyShadowsCidr { incoming: bool, cidr: IpNet },
+    /// A port was given on an ICMP/ICMPv6 rule. ICMP has no ports, so the
+    /// rule is filed under `PortSpec::Any` instead of the requested port —
+    /// otherwise it could never match. Mirrors Go's "ignoring port
+    /// specification for ICMP firewall rule" warning.
+    IcmpPortIgnored { incoming: bool, port: PortSpec },
 }
 
 enum LocalCidrDefault {
@@ -106,10 +111,27 @@ impl RuleSetBuilder {
         ca_name: Option<String>,
         ca_sha: Option<String>,
     ) -> Result<(), RuleError> {
-        let (start, end) = port_bounds(port)?;
+        let (mut start, mut end) = port_bounds(port)?;
 
         if matches!(proto, Protocol::Other(_)) {
             return Err(RuleError::UnknownProtocol(proto));
+        }
+
+        // ICMP has no ports. `packet::parse` reports ICMP `local_port` as 0
+        // and `remote_port` as the echo identifier, so a rule filed under a
+        // requested port could never be reached — inbound lookups would miss
+        // on 0 and outbound lookups would miss on every identifier but one.
+        // Coerce to `PORT_ANY` and warn, matching Go's AddRule (#1609).
+        //
+        // Unlike Go we coerce *after* `port_bounds`, so an inverted range on
+        // an ICMP rule still surfaces as `InvalidPortRange` rather than being
+        // silently swallowed — the port is meaningless either way, but an
+        // inverted range is a typo worth reporting.
+        if matches!(proto, Protocol::Icmp | Protocol::IcmpV6) && port != PortSpec::Any {
+            self.warnings
+                .push(RuleWarning::IcmpPortIgnored { incoming, port });
+            start = PORT_ANY;
+            end = PORT_ANY;
         }
 
         self.check_sanity(incoming, &groups, &host, &cidr);
@@ -376,6 +398,82 @@ mod tests {
         let p = packet("1.1.1.1", "2.2.2.2", 1, 1, Protocol::Udp);
         assert!(rules.matches(&p, true, &identity("h", &["g1"])));
         assert!(!rules.matches(&p, true, &identity("h", &["g2"])));
+    }
+
+    /// ICMP has no ports, so a port on an ICMP rule can only ever make it
+    /// dead: the parser reports `local_port`/`remote_port` for ICMP as the
+    /// echo identifier or 0, never a port the operator meant. Go coerces the
+    /// rule to `PortAny` and warns rather than silently filing it under an
+    /// unreachable key (firewall.go's AddRule, v1.11.0, #1609).
+    #[test]
+    fn icmp_rule_with_a_port_is_coerced_to_port_any() {
+        let mut b = open_builder();
+        b.add_rule(
+            true,
+            Protocol::Icmp,
+            PortSpec::Single(8),
+            vec![],
+            None,
+            None,
+            LocalCidrSpec::Unset,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            b.warnings(),
+            &[RuleWarning::IcmpPortIgnored {
+                incoming: true,
+                port: PortSpec::Single(8)
+            }]
+        );
+
+        let rules = b.build();
+        // An ICMP packet as the parser actually produces it: no port.
+        let p = packet("1.1.1.1", "2.2.2.2", 0, 0, Protocol::Icmp);
+        assert!(rules.matches(&p, true, &identity("h", &[])));
+    }
+
+    #[test]
+    fn icmpv6_rule_with_a_port_range_is_coerced_and_still_matches_outbound() {
+        // Outbound lookups key on `remote_port`, which for ICMP carries the
+        // echo identifier — so an uncoerced rule would miss on every ping
+        // with a different identifier, not just on port-0 packets.
+        let mut b = open_builder();
+        b.add_rule(
+            false,
+            Protocol::IcmpV6,
+            PortSpec::Range(1, 4),
+            vec![],
+            None,
+            None,
+            LocalCidrSpec::Unset,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let rules = b.build();
+        let p = packet("fd00::1", "fd00::2", 0, 41337, Protocol::IcmpV6);
+        assert!(rules.matches(&p, false, &identity("h", &[])));
+    }
+
+    #[test]
+    fn icmp_rule_without_a_port_produces_no_warning() {
+        let mut b = open_builder();
+        b.add_rule(
+            true,
+            Protocol::Icmp,
+            PortSpec::Any,
+            vec![],
+            None,
+            None,
+            LocalCidrSpec::Unset,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(b.warnings().is_empty());
     }
 
     #[test]
