@@ -43,7 +43,10 @@ fn write_length(out: &mut Vec<u8>, len: usize) {
         out.push(len as u8);
     } else {
         let bytes = len.to_be_bytes();
-        let first_nonzero = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len() - 1);
+        let first_nonzero = bytes
+            .iter()
+            .position(|&b| b != 0)
+            .unwrap_or(bytes.len() - 1);
         let significant = &bytes[first_nonzero..];
         out.push(0x80 | significant.len() as u8);
         out.extend_from_slice(significant);
@@ -69,7 +72,10 @@ impl<'a> Reader<'a> {
     }
 
     fn read_length(&mut self) -> Result<usize, Error> {
-        let first = *self.data.get(self.pos).ok_or_else(|| Error::Der("truncated length".into()))?;
+        let first = *self
+            .data
+            .get(self.pos)
+            .ok_or_else(|| Error::Der("truncated length".into()))?;
         self.pos += 1;
         if first & 0x80 == 0 {
             return Ok(first as usize);
@@ -78,8 +84,14 @@ impl<'a> Reader<'a> {
         if num_bytes == 0 || num_bytes > 8 {
             return Err(Error::Der("unsupported length encoding".into()));
         }
-        let end = self.pos.checked_add(num_bytes).ok_or_else(|| Error::Der("length overflow".into()))?;
-        let slice = self.data.get(self.pos..end).ok_or_else(|| Error::Der("truncated length".into()))?;
+        let end = self
+            .pos
+            .checked_add(num_bytes)
+            .ok_or_else(|| Error::Der("length overflow".into()))?;
+        let slice = self
+            .data
+            .get(self.pos..end)
+            .ok_or_else(|| Error::Der("truncated length".into()))?;
         let mut buf = [0u8; 8];
         buf[8 - num_bytes..].copy_from_slice(slice);
         self.pos = end;
@@ -88,14 +100,25 @@ impl<'a> Reader<'a> {
 
     /// Reads a TLV whose tag must exactly match `expected_tag`, returning its content bytes.
     fn read_tlv(&mut self, expected_tag: u8) -> Result<&'a [u8], Error> {
-        let tag = *self.data.get(self.pos).ok_or_else(|| Error::Der("truncated tag".into()))?;
+        let tag = *self
+            .data
+            .get(self.pos)
+            .ok_or_else(|| Error::Der("truncated tag".into()))?;
         if tag != expected_tag {
-            return Err(Error::Der(format!("expected tag {expected_tag:#x}, got {tag:#x}")));
+            return Err(Error::Der(format!(
+                "expected tag {expected_tag:#x}, got {tag:#x}"
+            )));
         }
         self.pos += 1;
         let len = self.read_length()?;
-        let end = self.pos.checked_add(len).ok_or_else(|| Error::Der("length overflow".into()))?;
-        let content = self.data.get(self.pos..end).ok_or_else(|| Error::Der("truncated content".into()))?;
+        let end = self
+            .pos
+            .checked_add(len)
+            .ok_or_else(|| Error::Der("length overflow".into()))?;
+        let content = self
+            .data
+            .get(self.pos..end)
+            .ok_or_else(|| Error::Der("truncated content".into()))?;
         self.pos = end;
         Ok(content)
     }
@@ -137,7 +160,11 @@ fn decode_der_int(b: &[u8]) -> Result<i64, Error> {
     if b.is_empty() || b.len() > 8 {
         return Err(Error::Der("invalid integer length".into()));
     }
-    let mut buf = if b[0] & 0x80 != 0 { [0xffu8; 8] } else { [0u8; 8] };
+    let mut buf = if b[0] & 0x80 != 0 {
+        [0xffu8; 8]
+    } else {
+        [0u8; 8]
+    };
     buf[8 - b.len()..].copy_from_slice(b);
     Ok(i64::from_be_bytes(buf))
 }
@@ -183,7 +210,10 @@ impl Network {
             17 => {
                 let mut octets = [0u8; 16];
                 octets.copy_from_slice(&b[..16]);
-                Ok(Network { addr: std::net::Ipv6Addr::from(octets).into(), prefix_len: b[16] })
+                Ok(Network {
+                    addr: std::net::Ipv6Addr::from(octets).into(),
+                    prefix_len: b[16],
+                })
             }
             n => Err(Error::Der(format!("invalid network length {n}"))),
         }
@@ -242,8 +272,16 @@ fn encode_details(d: &Details) -> Vec<u8> {
     if d.is_ca {
         write_tlv(&mut inner, TAG_DETAILS_IS_CA, &[0xff]);
     }
-    write_tlv(&mut inner, TAG_DETAILS_NOT_BEFORE, &encode_der_int(d.not_before));
-    write_tlv(&mut inner, TAG_DETAILS_NOT_AFTER, &encode_der_int(d.not_after));
+    write_tlv(
+        &mut inner,
+        TAG_DETAILS_NOT_BEFORE,
+        &encode_der_int(d.not_before),
+    );
+    write_tlv(
+        &mut inner,
+        TAG_DETAILS_NOT_AFTER,
+        &encode_der_int(d.not_after),
+    );
     if !d.issuer.is_empty() {
         write_tlv(&mut inner, TAG_DETAILS_ISSUER, &d.issuer);
     }
@@ -259,7 +297,8 @@ fn decode_details(raw_tlv: &[u8]) -> Result<Details, Error> {
     let mut r = Reader::new(inner_bytes);
 
     let name_bytes = r.read_tlv(TAG_DETAILS_NAME)?;
-    let name = String::from_utf8(name_bytes.to_vec()).map_err(|_| Error::Der("name is not valid utf-8".into()))?;
+    let name = String::from_utf8(name_bytes.to_vec())
+        .map_err(|_| Error::Der("name is not valid utf-8".into()))?;
 
     let mut networks = Vec::new();
     if let Some(nets) = r.read_tlv_opt(TAG_DETAILS_NETWORKS)? {
@@ -282,7 +321,10 @@ fn decode_details(raw_tlv: &[u8]) -> Result<Details, Error> {
         let mut gr = Reader::new(gs);
         while !gr.is_empty() {
             let g = gr.read_tlv(UNIVERSAL_UTF8_STRING)?;
-            groups.push(String::from_utf8(g.to_vec()).map_err(|_| Error::Der("group is not valid utf-8".into()))?);
+            groups.push(
+                String::from_utf8(g.to_vec())
+                    .map_err(|_| Error::Der("group is not valid utf-8".into()))?,
+            );
         }
     }
 
@@ -291,7 +333,16 @@ fn decode_details(raw_tlv: &[u8]) -> Result<Details, Error> {
     let not_after = decode_der_int(r.read_tlv(TAG_DETAILS_NOT_AFTER)?)?;
     let issuer = r.read_tlv_opt(TAG_DETAILS_ISSUER)?.unwrap_or(&[]).to_vec();
 
-    Ok(Details { name, networks, unsafe_networks, groups, is_ca, not_before, not_after, issuer })
+    Ok(Details {
+        name,
+        networks,
+        unsafe_networks,
+        groups,
+        is_ca,
+        not_before,
+        not_after,
+        issuer,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -324,7 +375,13 @@ impl Certificate {
         let public_key = r.read_tlv(TAG_CERT_PUBLIC_KEY)?.to_vec();
         let signature = r.read_tlv(TAG_CERT_SIGNATURE)?.to_vec();
 
-        Ok(Certificate { details, raw_details, curve, public_key, signature })
+        Ok(Certificate {
+            details,
+            raw_details,
+            curve,
+            public_key,
+            signature,
+        })
     }
 
     pub fn encode(&self) -> Vec<u8> {
@@ -369,7 +426,11 @@ impl Certificate {
     /// Reconstructs a full `Certificate` from the reduced handshake-message
     /// encoding plus the peer's Noise static public key learned from the
     /// handshake itself. Mirrors `cert.Recombine` in cert_v2.go.
-    pub fn recombine(handshake_bytes: &[u8], peer_public_key: &[u8], curve: Curve) -> Result<Self, Error> {
+    pub fn recombine(
+        handshake_bytes: &[u8],
+        peer_public_key: &[u8],
+        curve: Curve,
+    ) -> Result<Self, Error> {
         let mut top = Reader::new(handshake_bytes);
         let envelope = top.read_tlv(UNIVERSAL_SEQUENCE)?;
         let mut r = Reader::new(envelope);
@@ -378,7 +439,13 @@ impl Certificate {
         let details = decode_details(&raw_details)?;
         let signature = r.read_tlv(TAG_CERT_SIGNATURE)?.to_vec();
 
-        Ok(Certificate { details, raw_details, curve, public_key: peer_public_key.to_vec(), signature })
+        Ok(Certificate {
+            details,
+            raw_details,
+            curve,
+            public_key: peer_public_key.to_vec(),
+            signature,
+        })
     }
 }
 
@@ -388,7 +455,11 @@ mod tests {
     use crate::cert::pem;
 
     fn fixture(name: &str) -> Vec<u8> {
-        std::fs::read(format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap()
+        std::fs::read(format!(
+            "{}/tests/fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap()
     }
 
     fn fixture_json() -> serde_json::Value {
@@ -403,8 +474,14 @@ mod tests {
         let manifest = fixture_json();
         assert_eq!(cert.details.name, manifest["ca"]["name"]);
         assert_eq!(cert.details.is_ca, true);
-        assert_eq!(cert.details.not_before, manifest["ca"]["not_before"].as_i64().unwrap());
-        assert_eq!(cert.details.not_after, manifest["ca"]["not_after"].as_i64().unwrap());
+        assert_eq!(
+            cert.details.not_before,
+            manifest["ca"]["not_before"].as_i64().unwrap()
+        );
+        assert_eq!(
+            cert.details.not_after,
+            manifest["ca"]["not_after"].as_i64().unwrap()
+        );
         assert_eq!(cert.curve, Curve::Curve25519);
         assert_eq!(hex::encode(&cert.public_key).len(), 64);
     }
@@ -416,7 +493,10 @@ mod tests {
         assert_eq!(cert.details.name, "host-a");
         assert_eq!(cert.details.groups, vec!["test".to_string()]);
         assert_eq!(cert.details.networks.len(), 1);
-        assert_eq!(cert.details.networks[0].addr, "10.100.0.1".parse::<std::net::IpAddr>().unwrap());
+        assert_eq!(
+            cert.details.networks[0].addr,
+            "10.100.0.1".parse::<std::net::IpAddr>().unwrap()
+        );
         assert_eq!(cert.details.networks[0].prefix_len, 16);
         assert!(!cert.details.issuer.is_empty());
     }

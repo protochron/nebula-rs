@@ -22,7 +22,8 @@ impl Cipher {
             Cipher::AesGcm => "Noise_IX_25519_AESGCM_SHA256",
             Cipher::ChaChaPoly => "Noise_IX_25519_ChaChaPoly_SHA256",
         };
-        s.parse().expect("static noise params string is always valid")
+        s.parse()
+            .expect("static noise params string is always valid")
     }
 }
 
@@ -44,13 +45,20 @@ pub struct SplitKeys {
 /// (matches how `snow`'s own `StatelessTransportState` picks
 /// `cipherstates.0` vs `.1` based on `is_initiator`).
 fn split_keys(hs: &mut HandshakeState) -> Result<SplitKeys, Error> {
-    let remote_static = hs
-        .get_remote_static()
-        .map(|s| s.to_vec())
-        .ok_or_else(|| Error::HandshakeFailed("handshake completed with no remote static key".into()))?;
+    let remote_static = hs.get_remote_static().map(|s| s.to_vec()).ok_or_else(|| {
+        Error::HandshakeFailed("handshake completed with no remote static key".into())
+    })?;
     let (k1, k2) = hs.dangerously_get_raw_split();
-    let (send_key, recv_key) = if hs.is_initiator() { (k1, k2) } else { (k2, k1) };
-    Ok(SplitKeys { remote_static, send_key, recv_key })
+    let (send_key, recv_key) = if hs.is_initiator() {
+        (k1, k2)
+    } else {
+        (k2, k1)
+    };
+    Ok(SplitKeys {
+        remote_static,
+        send_key,
+        recv_key,
+    })
 }
 
 fn unix_nanos_now() -> u64 {
@@ -71,7 +79,9 @@ pub fn stage0(
     initiator_index: u32,
 ) -> Result<(HandshakeState, Vec<u8>), Error> {
     let builder = Builder::new(cipher.noise_params());
-    let mut hs = builder.local_private_key(local_private_key)?.build_initiator()?;
+    let mut hs = builder
+        .local_private_key(local_private_key)?
+        .build_initiator()?;
 
     let payload = NebulaHandshake {
         details: Some(NebulaHandshakeDetails {
@@ -108,7 +118,9 @@ pub fn respond(
     stage0_noise_payload: &[u8],
 ) -> Result<(NebulaHandshakeDetails, Vec<u8>, SplitKeys), Error> {
     let builder = Builder::new(cipher.noise_params());
-    let mut hs = builder.local_private_key(local_private_key)?.build_responder()?;
+    let mut hs = builder
+        .local_private_key(local_private_key)?
+        .build_responder()?;
 
     let mut payload = vec![0u8; 65535];
     let len = hs.read_message(stage0_noise_payload, &mut payload)?;
@@ -192,32 +204,54 @@ mod tests {
         let initiator_cert_bytes = b"initiator-cert-bytes".to_vec();
         let responder_cert_bytes = b"responder-cert-bytes".to_vec();
 
-        let (hs, stage0_msg) =
-            stage0(Cipher::AesGcm, &initiator_key, initiator_cert_bytes.clone(), 42).unwrap();
+        let (hs, stage0_msg) = stage0(
+            Cipher::AesGcm,
+            &initiator_key,
+            initiator_cert_bytes.clone(),
+            42,
+        )
+        .unwrap();
 
-        let (their_details_at_responder, stage2_msg, responder_keys) =
-            respond(Cipher::AesGcm, &responder_key, responder_cert_bytes.clone(), 99, &stage0_msg).unwrap();
+        let (their_details_at_responder, stage2_msg, responder_keys) = respond(
+            Cipher::AesGcm,
+            &responder_key,
+            responder_cert_bytes.clone(),
+            99,
+            &stage0_msg,
+        )
+        .unwrap();
         assert_eq!(their_details_at_responder.cert, initiator_cert_bytes);
         assert_eq!(their_details_at_responder.initiator_index, 42);
 
-        let (their_details_at_initiator, initiator_keys) = finish_initiator(hs, &stage2_msg).unwrap();
+        let (their_details_at_initiator, initiator_keys) =
+            finish_initiator(hs, &stage2_msg).unwrap();
         assert_eq!(their_details_at_initiator.cert, responder_cert_bytes);
         // The responder's own index must round-trip back to the initiator, so
         // the initiator knows which index to stamp on its outbound data packets.
         assert_eq!(their_details_at_initiator.responder_index, 99);
 
         // Both sides should now share working transport keys.
-        let mut initiator_transport =
-            crate::transport::Transport::new(Cipher::AesGcm, initiator_keys.send_key, initiator_keys.recv_key);
-        let mut responder_transport =
-            crate::transport::Transport::new(Cipher::AesGcm, responder_keys.send_key, responder_keys.recv_key);
+        let mut initiator_transport = crate::transport::Transport::new(
+            Cipher::AesGcm,
+            initiator_keys.send_key,
+            initiator_keys.recv_key,
+        );
+        let mut responder_transport = crate::transport::Transport::new(
+            Cipher::AesGcm,
+            responder_keys.send_key,
+            responder_keys.recv_key,
+        );
 
         let aad = b"fake-16-byte-hdr";
         let mut ciphertext = vec![0u8; 128];
         let counter = initiator_transport.next_counter();
-        let len = initiator_transport.encrypt(counter, aad, b"hello", &mut ciphertext).unwrap();
+        let len = initiator_transport
+            .encrypt(counter, aad, b"hello", &mut ciphertext)
+            .unwrap();
         let mut plaintext = vec![0u8; 128];
-        let plen = responder_transport.decrypt(counter, aad, &ciphertext[..len], &mut plaintext).unwrap();
+        let plen = responder_transport
+            .decrypt(counter, aad, &ciphertext[..len], &mut plaintext)
+            .unwrap();
         assert_eq!(&plaintext[..plen], b"hello");
     }
 
@@ -236,7 +270,13 @@ mod tests {
 
         // `unwrap_err` would require `Debug` on `SplitKeys` (raw transport
         // keys) purely to satisfy a test — match the error out instead.
-        let Err(err) = respond(Cipher::AesGcm, &responder_key, b"b".to_vec(), 99, &stage0_msg) else {
+        let Err(err) = respond(
+            Cipher::AesGcm,
+            &responder_key,
+            b"b".to_vec(),
+            99,
+            &stage0_msg,
+        ) else {
             panic!("responder accepted a zero initiator index");
         };
         assert!(matches!(err, Error::HandshakeInvalidRemoteIndex));
@@ -248,8 +288,14 @@ mod tests {
         let (responder_key, _) = keypair();
         let (hs, stage0_msg) = stage0(Cipher::AesGcm, &initiator_key, b"a".to_vec(), 42).unwrap();
         // A responder that hands back index 0 is equally unusable.
-        let (_, stage2_msg, _) =
-            respond(Cipher::AesGcm, &responder_key, b"b".to_vec(), 0, &stage0_msg).unwrap();
+        let (_, stage2_msg, _) = respond(
+            Cipher::AesGcm,
+            &responder_key,
+            b"b".to_vec(),
+            0,
+            &stage0_msg,
+        )
+        .unwrap();
 
         let Err(err) = finish_initiator(hs, &stage2_msg) else {
             panic!("initiator accepted a zero responder index");
@@ -261,8 +307,16 @@ mod tests {
     fn full_ix_handshake_completes_with_chachapoly() {
         let (initiator_key, _) = keypair();
         let (responder_key, _) = keypair();
-        let (hs, stage0_msg) = stage0(Cipher::ChaChaPoly, &initiator_key, b"a".to_vec(), 7).unwrap();
-        let (_, stage2_msg, _) = respond(Cipher::ChaChaPoly, &responder_key, b"b".to_vec(), 55, &stage0_msg).unwrap();
+        let (hs, stage0_msg) =
+            stage0(Cipher::ChaChaPoly, &initiator_key, b"a".to_vec(), 7).unwrap();
+        let (_, stage2_msg, _) = respond(
+            Cipher::ChaChaPoly,
+            &responder_key,
+            b"b".to_vec(),
+            55,
+            &stage0_msg,
+        )
+        .unwrap();
         let (details, _) = finish_initiator(hs, &stage2_msg).unwrap();
         assert_eq!(details.cert, b"b".to_vec());
     }

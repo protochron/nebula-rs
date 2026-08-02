@@ -10,9 +10,9 @@
 //! process with no global state. See
 //! `docs/superpowers/specs/2026-07-11-nebula-listener-design.md`.
 
-pub mod packet;
-pub mod tun;
 mod identity;
 mod listener;
+pub mod packet;
+pub mod tun;
 
 pub use listener::{Listener, ListenerConfig};

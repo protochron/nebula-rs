@@ -33,7 +33,10 @@ fn ip_to_addr(ip: IpAddr) -> Addr {
 
 fn addr_to_v4_v6(addr: SocketAddr, v4: &mut Vec<V4AddrPort>, v6: &mut Vec<V6AddrPort>) {
     match addr {
-        SocketAddr::V4(a) => v4.push(V4AddrPort { addr: u32::from(*a.ip()), port: u32::from(a.port()) }),
+        SocketAddr::V4(a) => v4.push(V4AddrPort {
+            addr: u32::from(*a.ip()),
+            port: u32::from(a.port()),
+        }),
         SocketAddr::V6(a) => {
             let octets = a.ip().octets();
             v6.push(V6AddrPort {
@@ -69,23 +72,34 @@ pub fn host_update_notification(vpn_addr: IpAddr, reachable_at: &[SocketAddr]) -
 pub fn host_query(vpn_addr: IpAddr) -> NebulaMeta {
     NebulaMeta {
         r#type: MessageType::HostQuery as i32,
-        details: Some(NebulaMetaDetails { vpn_addr: Some(ip_to_addr(vpn_addr)), ..Default::default() }),
+        details: Some(NebulaMetaDetails {
+            vpn_addr: Some(ip_to_addr(vpn_addr)),
+            ..Default::default()
+        }),
     }
 }
 
 /// Extracts the candidate `SocketAddr`s from a `HostQueryReply` or
 /// `HostUpdateNotification`.
 pub fn candidate_addrs(meta: &NebulaMeta) -> Vec<SocketAddr> {
-    let Some(details) = &meta.details else { return Vec::new() };
+    let Some(details) = &meta.details else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     for v4 in &details.v4_addr_ports {
-        out.push(SocketAddr::new(IpAddr::V4(Ipv4Addr::from(v4.addr)), v4.port as u16));
+        out.push(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::from(v4.addr)),
+            v4.port as u16,
+        ));
     }
     for v6 in &details.v6_addr_ports {
         let mut octets = [0u8; 16];
         octets[0..8].copy_from_slice(&v6.hi.to_be_bytes());
         octets[8..16].copy_from_slice(&v6.lo.to_be_bytes());
-        out.push(SocketAddr::new(IpAddr::V6(Ipv6Addr::from(octets)), v6.port as u16));
+        out.push(SocketAddr::new(
+            IpAddr::V6(Ipv6Addr::from(octets)),
+            v6.port as u16,
+        ));
     }
     out
 }
@@ -98,7 +112,10 @@ mod tests {
     #[test]
     fn host_update_notification_round_trips_through_candidate_addrs() {
         let vpn_addr = IpAddr::V4(Ipv4Addr::new(10, 100, 0, 3));
-        let reachable = vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 5)), 4242)];
+        let reachable = vec![SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 5)),
+            4242,
+        )];
         let meta = host_update_notification(vpn_addr, &reachable);
         assert_eq!(candidate_addrs(&meta), reachable);
     }

@@ -11,7 +11,7 @@ use std::time::Duration;
 use prost::Message;
 use snow::HandshakeState;
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::time::timeout;
 
 use crate::cert::der::{Certificate, Curve, Network};
@@ -21,8 +21,8 @@ use crate::handshake::{self, Cipher};
 use crate::header::{self, Header};
 use crate::lighthouse;
 use crate::transport::Transport;
-use crate::wire::nebula_meta::MessageType as LighthouseMessageType;
 use crate::wire::NebulaMeta;
+use crate::wire::nebula_meta::MessageType as LighthouseMessageType;
 
 pub struct SessionConfig {
     pub ca_cert_pem: Vec<u8>,
@@ -85,7 +85,10 @@ fn rand_index() -> u32 {
     // connection-identifier, not key material) — nebula itself just calls
     // `rand.Read` for this; a coarse time-seeded value keeps this crate's
     // dependency list smaller.
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_nanos();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos();
     nanos ^ 0x9E37_79B9
 }
 
@@ -107,19 +110,26 @@ async fn handle_handshake(inner: &mut Inner, hdr: &Header, body: &[u8], from: So
         // sends us, and we key this session by it below.
         let index = allocate_index(inner);
         let cert_bytes = inner.host_cert.encode_for_handshake();
-        let Ok((their_details, reply, keys)) =
-            handshake::respond(inner.cipher, &inner.host_private_key, cert_bytes, index, body)
-        else {
+        let Ok((their_details, reply, keys)) = handshake::respond(
+            inner.cipher,
+            &inner.host_private_key,
+            cert_bytes,
+            index,
+            body,
+        ) else {
             return;
         };
-        let Ok(their_cert) = Certificate::recombine(&their_details.cert, &keys.remote_static, Curve::Curve25519)
+        let Ok(their_cert) =
+            Certificate::recombine(&their_details.cert, &keys.remote_static, Curve::Curve25519)
         else {
             return;
         };
         if verify_host_cert(&their_cert, &inner.ca_cert, now_unix()).is_err() {
             return;
         }
-        let Some(vpn_addr) = their_cert.details.networks.first().map(|n| n.addr) else { return };
+        let Some(vpn_addr) = their_cert.details.networks.first().map(|n| n.addr) else {
+            return;
+        };
 
         let mut header_bytes = [0u8; header::LEN];
         Header {
@@ -149,17 +159,27 @@ async fn handle_handshake(inner: &mut Inner, hdr: &Header, body: &[u8], from: So
     } else {
         // We are the initiator; hdr.remote_index is our own local index
         // for this in-progress handshake.
-        let Some(PeerState::Handshaking(_)) = inner.peers_by_index.get(&hdr.remote_index) else { return };
-        let Some(PeerState::Handshaking(hs)) = inner.peers_by_index.remove(&hdr.remote_index) else { return };
-        let Ok((their_details, keys)) = handshake::finish_initiator(hs, body) else { return };
-        let Ok(their_cert) = Certificate::recombine(&their_details.cert, &keys.remote_static, Curve::Curve25519)
+        let Some(PeerState::Handshaking(_)) = inner.peers_by_index.get(&hdr.remote_index) else {
+            return;
+        };
+        let Some(PeerState::Handshaking(hs)) = inner.peers_by_index.remove(&hdr.remote_index)
+        else {
+            return;
+        };
+        let Ok((their_details, keys)) = handshake::finish_initiator(hs, body) else {
+            return;
+        };
+        let Ok(their_cert) =
+            Certificate::recombine(&their_details.cert, &keys.remote_static, Curve::Curve25519)
         else {
             return;
         };
         if verify_host_cert(&their_cert, &inner.ca_cert, now_unix()).is_err() {
             return;
         }
-        let Some(vpn_addr) = their_cert.details.networks.first().map(|n| n.addr) else { return };
+        let Some(vpn_addr) = their_cert.details.networks.first().map(|n| n.addr) else {
+            return;
+        };
         inner.peers_by_index.insert(
             hdr.remote_index,
             PeerState::Established {
@@ -180,7 +200,11 @@ async fn handle_handshake(inner: &mut Inner, hdr: &Header, body: &[u8], from: So
 }
 
 fn handle_message(inner: &mut Inner, hdr: &Header, header_bytes: &[u8], body: &[u8]) {
-    let Some(PeerState::Established { transport, vpn_addr, .. }) = inner.peers_by_index.get_mut(&hdr.remote_index)
+    let Some(PeerState::Established {
+        transport,
+        vpn_addr,
+        ..
+    }) = inner.peers_by_index.get_mut(&hdr.remote_index)
     else {
         return;
     };
@@ -188,7 +212,9 @@ fn handle_message(inner: &mut Inner, hdr: &Header, header_bytes: &[u8], body: &[
     // The raw wire header bytes are the AEAD associated data (nebula
     // authenticates the header alongside the payload) — see the
     // module-level comment in `transport`.
-    let Ok(len) = transport.decrypt(hdr.message_counter, header_bytes, body, &mut out) else { return };
+    let Ok(len) = transport.decrypt(hdr.message_counter, header_bytes, body, &mut out) else {
+        return;
+    };
     out.truncate(len);
     let _ = inner.inbox_tx.send((*vpn_addr, out[..len].to_vec()));
 }
@@ -199,17 +225,23 @@ fn handle_message(inner: &mut Inner, hdr: &Header, header_bytes: &[u8], body: &[
 /// case calls `f.decrypt(hostinfo, ...)` before dispatching it), never sent
 /// or accepted as plaintext.
 fn handle_lighthouse_packet(inner: &mut Inner, hdr: &Header, header_bytes: &[u8], body: &[u8]) {
-    let Some(PeerState::Established { transport, .. }) = inner.peers_by_index.get_mut(&hdr.remote_index) else {
+    let Some(PeerState::Established { transport, .. }) =
+        inner.peers_by_index.get_mut(&hdr.remote_index)
+    else {
         return;
     };
     let mut out = vec![0u8; body.len()];
-    let Ok(len) = transport.decrypt(hdr.message_counter, header_bytes, body, &mut out) else { return };
+    let Ok(len) = transport.decrypt(hdr.message_counter, header_bytes, body, &mut out) else {
+        return;
+    };
     out.truncate(len);
     handle_lighthouse(inner, &out[..len]);
 }
 
 fn handle_lighthouse(inner: &mut Inner, body: &[u8]) {
-    let Ok(meta) = NebulaMeta::decode(body) else { return };
+    let Ok(meta) = NebulaMeta::decode(body) else {
+        return;
+    };
     if meta.r#type == LighthouseMessageType::HostQueryReply as i32
         || meta.r#type == LighthouseMessageType::HostUpdateNotification as i32
     {
@@ -217,7 +249,12 @@ fn handle_lighthouse(inner: &mut Inner, body: &[u8]) {
         if addrs.is_empty() {
             return;
         }
-        if let Some(vpn_addr) = meta.details.as_ref().and_then(|d| d.vpn_addr.as_ref()).map(lighthouse::addr_to_ip) {
+        if let Some(vpn_addr) = meta
+            .details
+            .as_ref()
+            .and_then(|d| d.vpn_addr.as_ref())
+            .map(lighthouse::addr_to_ip)
+        {
             inner.known_addrs.insert(vpn_addr, addrs[0]);
             if let Some(tx) = inner.lighthouse_waiters.remove(&vpn_addr) {
                 let _ = tx.send(addrs);
@@ -230,8 +267,12 @@ fn spawn_recv_loop(socket: Arc<UdpSocket>, inner: Arc<Mutex<Inner>>) {
     tokio::spawn(async move {
         let mut buf = vec![0u8; 65535];
         loop {
-            let Ok((n, from)) = socket.recv_from(&mut buf).await else { continue };
-            let Ok(hdr) = Header::parse(&buf[..n]) else { continue };
+            let Ok((n, from)) = socket.recv_from(&mut buf).await else {
+                continue;
+            };
+            let Ok(hdr) = Header::parse(&buf[..n]) else {
+                continue;
+            };
             let header_bytes = buf[..header::LEN].to_vec();
             let body = buf[header::LEN..n].to_vec();
             let mut inner_guard = inner.lock().await;
@@ -281,21 +322,38 @@ impl Session {
     /// created; this constructor registers that fd with the *Session's*
     /// tokio runtime via `from_std`, so the runtime never has to be in the
     /// socket's netns. `config.bind_addr` is unused on this path.
-    pub async fn from_socket(config: SessionConfig, sock: std::net::UdpSocket) -> Result<Self, Error> {
+    pub async fn from_socket(
+        config: SessionConfig,
+        sock: std::net::UdpSocket,
+    ) -> Result<Self, Error> {
         sock.set_nonblocking(true)?;
         let socket = UdpSocket::from_std(sock)?;
         Self::build(config, socket).await
     }
 
     async fn build(config: SessionConfig, socket: UdpSocket) -> Result<Self, Error> {
-        let ca_der = crate::cert::pem::decode(&config.ca_cert_pem, crate::cert::pem::CERTIFICATE_V2_BANNER)?;
+        let ca_der =
+            crate::cert::pem::decode(&config.ca_cert_pem, crate::cert::pem::CERTIFICATE_V2_BANNER)?;
         let ca_cert = Certificate::decode(&ca_der)?;
-        let host_der = crate::cert::pem::decode(&config.host_cert_pem, crate::cert::pem::CERTIFICATE_V2_BANNER)?;
+        let host_der = crate::cert::pem::decode(
+            &config.host_cert_pem,
+            crate::cert::pem::CERTIFICATE_V2_BANNER,
+        )?;
         let host_cert = Certificate::decode(&host_der)?;
-        let key_bytes = crate::cert::pem::decode(&config.host_key_pem, crate::cert::pem::X25519_PRIVATE_KEY_BANNER)?;
-        let host_private_key: [u8; 32] =
-            key_bytes.as_slice().try_into().map_err(|_| Error::Pem("host private key is not 32 bytes".into()))?;
-        let vpn_addr = host_cert.details.networks.first().ok_or(Error::CertNoNetworks)?.addr;
+        let key_bytes = crate::cert::pem::decode(
+            &config.host_key_pem,
+            crate::cert::pem::X25519_PRIVATE_KEY_BANNER,
+        )?;
+        let host_private_key: [u8; 32] = key_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::Pem("host private key is not 32 bytes".into()))?;
+        let vpn_addr = host_cert
+            .details
+            .networks
+            .first()
+            .ok_or(Error::CertNoNetworks)?
+            .addr;
 
         let socket = Arc::new(socket);
         let local_addr = socket.local_addr()?;
@@ -319,7 +377,11 @@ impl Session {
 
         spawn_recv_loop(socket, inner.clone());
 
-        let session = Session { inner, inbox_rx: Mutex::new(inbox_rx), local_addr };
+        let session = Session {
+            inner,
+            inbox_rx: Mutex::new(inbox_rx),
+            local_addr,
+        };
         session.register_with_lighthouses().await?;
         Ok(session)
     }
@@ -362,7 +424,8 @@ impl Session {
         let payload = meta.encode_to_vec();
         for lh in lighthouses {
             self.connect(lh).await?;
-            self.send_typed(lh, header::message_type::LIGHTHOUSE, &payload).await?;
+            self.send_typed(lh, header::message_type::LIGHTHOUSE, &payload)
+                .await?;
         }
         Ok(())
     }
@@ -387,11 +450,18 @@ impl Session {
             // before a `Session` is ever handed out, so this send targets an
             // existing tunnel; a failure here just means that lighthouse won't
             // get a chance to answer, not that the whole resolve should abort.
-            let _ = self.send_typed(lh, header::message_type::LIGHTHOUSE, &payload).await;
+            let _ = self
+                .send_typed(lh, header::message_type::LIGHTHOUSE, &payload)
+                .await;
         }
-        let addrs =
-            timeout(Duration::from_secs(5), rx).await.map_err(|_| Error::PeerUnreachable(vpn_addr))?.map_err(|_| Error::PeerUnreachable(vpn_addr))?;
-        addrs.first().copied().ok_or(Error::PeerUnreachable(vpn_addr))
+        let addrs = timeout(Duration::from_secs(5), rx)
+            .await
+            .map_err(|_| Error::PeerUnreachable(vpn_addr))?
+            .map_err(|_| Error::PeerUnreachable(vpn_addr))?;
+        addrs
+            .first()
+            .copied()
+            .ok_or(Error::PeerUnreachable(vpn_addr))
     }
 
     pub async fn connect(&self, vpn_addr: IpAddr) -> Result<(), Error> {
@@ -403,8 +473,11 @@ impl Session {
 
             let index = allocate_index(&mut inner);
             let cert_bytes = inner.host_cert.encode_for_handshake();
-            let (hs, msg) = handshake::stage0(inner.cipher, &inner.host_private_key, cert_bytes, index)?;
-            inner.peers_by_index.insert(index, PeerState::Handshaking(hs));
+            let (hs, msg) =
+                handshake::stage0(inner.cipher, &inner.host_private_key, cert_bytes, index)?;
+            inner
+                .peers_by_index
+                .insert(index, PeerState::Handshaking(hs));
 
             let mut header_bytes = [0u8; header::LEN];
             Header {
@@ -430,7 +503,8 @@ impl Session {
     }
 
     pub async fn send(&self, vpn_addr: IpAddr, payload: &[u8]) -> Result<(), Error> {
-        self.send_typed(vpn_addr, header::message_type::MESSAGE, payload).await
+        self.send_typed(vpn_addr, header::message_type::MESSAGE, payload)
+            .await
     }
 
     /// Encrypts `payload` for the established peer at `vpn_addr` and sends
@@ -444,10 +518,17 @@ impl Session {
         let (packet, remote, socket) = {
             let mut inner = self.inner.lock().await;
             // Our own local index — how we find the session.
-            let index = *inner.index_by_vpn_addr.get(&vpn_addr).ok_or(Error::PeerUnreachable(vpn_addr))?;
+            let index = *inner
+                .index_by_vpn_addr
+                .get(&vpn_addr)
+                .ok_or(Error::PeerUnreachable(vpn_addr))?;
             let socket = inner.socket.clone();
-            let Some(PeerState::Established { transport, remote, remote_index, .. }) =
-                inner.peers_by_index.get_mut(&index)
+            let Some(PeerState::Established {
+                transport,
+                remote,
+                remote_index,
+                ..
+            }) = inner.peers_by_index.get_mut(&index)
             else {
                 return Err(Error::PeerUnreachable(vpn_addr));
             };
@@ -482,6 +563,11 @@ impl Session {
     }
 
     pub async fn recv(&self) -> Result<(IpAddr, Vec<u8>), Error> {
-        self.inbox_rx.lock().await.recv().await.ok_or(Error::Timeout("session closed"))
+        self.inbox_rx
+            .lock()
+            .await
+            .recv()
+            .await
+            .ok_or(Error::Timeout("session closed"))
     }
 }

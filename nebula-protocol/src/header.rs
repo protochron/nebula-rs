@@ -43,7 +43,10 @@ impl Header {
 
     pub fn parse(b: &[u8]) -> Result<Self, Error> {
         if b.len() < LEN {
-            return Err(Error::HeaderTooShort { need: LEN, got: b.len() });
+            return Err(Error::HeaderTooShort {
+                need: LEN,
+                got: b.len(),
+            });
         }
         Ok(Self {
             version: (b[0] >> 4) & 0x0f,
@@ -74,7 +77,10 @@ mod tests {
         h.encode(&mut out);
         assert_eq!(
             out,
-            [0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01]
+            [
+                0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x01
+            ]
         );
     }
 
@@ -96,6 +102,9 @@ mod tests {
     #[test]
     fn parse_rejects_short_buffer() {
         let err = Header::parse(&[0u8; 15]).unwrap_err();
-        assert!(matches!(err, crate::Error::HeaderTooShort { need: LEN, got: 15 }));
+        assert!(matches!(
+            err,
+            crate::Error::HeaderTooShort { need: LEN, got: 15 }
+        ));
     }
 }

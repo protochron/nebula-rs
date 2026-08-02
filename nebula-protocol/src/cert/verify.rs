@@ -17,13 +17,18 @@ impl Certificate {
         if self.curve != Curve::Curve25519 {
             return Err(Error::CertUnsupportedCurve);
         }
-        let key_bytes: [u8; 32] =
-            signer_public_key.try_into().map_err(|_| Error::CertSignatureInvalid)?;
+        let key_bytes: [u8; 32] = signer_public_key
+            .try_into()
+            .map_err(|_| Error::CertSignatureInvalid)?;
         let vk = VerifyingKey::from_bytes(&key_bytes).map_err(|_| Error::CertSignatureInvalid)?;
-        let sig_bytes: [u8; 64] =
-            self.signature.as_slice().try_into().map_err(|_| Error::CertSignatureInvalid)?;
+        let sig_bytes: [u8; 64] = self
+            .signature
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::CertSignatureInvalid)?;
         let sig = Signature::from_bytes(&sig_bytes);
-        vk.verify(&self.signing_bytes(), &sig).map_err(|_| Error::CertSignatureInvalid)
+        vk.verify(&self.signing_bytes(), &sig)
+            .map_err(|_| Error::CertSignatureInvalid)
     }
 
     /// The hex-encoded SHA-256 fingerprint of this certificate, matching
@@ -75,7 +80,11 @@ mod tests {
     use crate::cert::{der::Certificate, pem};
 
     fn fixture(name: &str) -> Vec<u8> {
-        std::fs::read(format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap()
+        std::fs::read(format!(
+            "{}/tests/fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap()
     }
 
     fn load(name: &str) -> Certificate {
@@ -115,7 +124,9 @@ mod tests {
         let not_a_ca = load("host-b.crt");
         let host = load("host-a.crt");
         let err = verify_host_cert(&host, &not_a_ca, host.details.not_before + 60).unwrap_err();
-        assert!(err.to_string().contains("not") || matches!(err, crate::Error::CertSignatureInvalid));
+        assert!(
+            err.to_string().contains("not") || matches!(err, crate::Error::CertSignatureInvalid)
+        );
     }
 
     #[test]

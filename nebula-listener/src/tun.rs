@@ -54,7 +54,10 @@ struct In6Ifreq {
 fn write_name(dst: &mut [libc::c_char; 16], name: &str) -> io::Result<()> {
     let bytes = name.as_bytes();
     if bytes.len() >= 16 {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "interface name too long (max 15 bytes)"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "interface name too long (max 15 bytes)",
+        ));
     }
     for (slot, b) in dst.iter_mut().zip(bytes) {
         *slot = *b as libc::c_char;
@@ -66,7 +69,9 @@ fn sockaddr_in_v4(addr: std::net::Ipv4Addr) -> libc::sockaddr_in {
     // s_addr is network byte order; u32::from gives host order.
     let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
     sa.sin_family = libc::AF_INET as libc::sa_family_t;
-    sa.sin_addr = libc::in_addr { s_addr: u32::from(addr).to_be() };
+    sa.sin_addr = libc::in_addr {
+        s_addr: u32::from(addr).to_be(),
+    };
     sa
 }
 
@@ -78,7 +83,11 @@ pub fn create(name: &str, addr: IpNet, mtu: u32) -> io::Result<OwnedFd> {
     }
     let tun = unsafe { OwnedFd::from_raw_fd(tun_raw) };
 
-    let mut ifr = IfReqShort { name: [0; 16], data: IFF_TUN | IFF_NO_PI, _pad: [0; 22] };
+    let mut ifr = IfReqShort {
+        name: [0; 16],
+        data: IFF_TUN | IFF_NO_PI,
+        _pad: [0; 22],
+    };
     write_name(&mut ifr.name, name)?;
     if unsafe { libc::ioctl(tun_raw, TUNSETIFF, &mut ifr as *mut _) } < 0 {
         return Err(io::Error::last_os_error());
@@ -100,15 +109,21 @@ pub fn create(name: &str, addr: IpNet, mtu: u32) -> io::Result<OwnedFd> {
 
     match addr {
         IpNet::V4(v4) => {
-            let mut addr_req =
-                IfReqSockaddr { name: [0; 16], addr: sockaddr_in_v4(v4.addr()), _pad: [0; 8] };
+            let mut addr_req = IfReqSockaddr {
+                name: [0; 16],
+                addr: sockaddr_in_v4(v4.addr()),
+                _pad: [0; 8],
+            };
             write_name(&mut addr_req.name, name)?;
             if unsafe { libc::ioctl(sfd, SIOCSIFADDR, &mut addr_req as *mut _) } < 0 {
                 return Err(io::Error::last_os_error());
             }
 
-            let mut mask_req =
-                IfReqSockaddr { name: [0; 16], addr: sockaddr_in_v4(v4.netmask()), _pad: [0; 8] };
+            let mut mask_req = IfReqSockaddr {
+                name: [0; 16],
+                addr: sockaddr_in_v4(v4.netmask()),
+                _pad: [0; 8],
+            };
             write_name(&mut mask_req.name, name)?;
             if unsafe { libc::ioctl(sfd, SIOCSIFNETMASK, &mut mask_req as *mut _) } < 0 {
                 return Err(io::Error::last_os_error());
@@ -122,14 +137,20 @@ pub fn create(name: &str, addr: IpNet, mtu: u32) -> io::Result<OwnedFd> {
 
             // The inet6 SIOCSIFADDR takes an in6_ifreq keyed by ifindex,
             // not name.
-            let mut idx_req = IfReqInt { name: [0; 16], val: 0, _pad: [0; 20] };
+            let mut idx_req = IfReqInt {
+                name: [0; 16],
+                val: 0,
+                _pad: [0; 20],
+            };
             write_name(&mut idx_req.name, name)?;
             if unsafe { libc::ioctl(sfd, SIOCGIFINDEX, &mut idx_req as *mut _) } < 0 {
                 return Err(io::Error::last_os_error());
             }
 
             let mut addr_req = In6Ifreq {
-                addr: libc::in6_addr { s6_addr: v6.addr().octets() },
+                addr: libc::in6_addr {
+                    s6_addr: v6.addr().octets(),
+                },
                 prefixlen: u32::from(v6.prefix_len()),
                 ifindex: idx_req.val,
             };
@@ -139,14 +160,22 @@ pub fn create(name: &str, addr: IpNet, mtu: u32) -> io::Result<OwnedFd> {
         }
     }
 
-    let mut mtu_req = IfReqInt { name: [0; 16], val: mtu as libc::c_int, _pad: [0; 20] };
+    let mut mtu_req = IfReqInt {
+        name: [0; 16],
+        val: mtu as libc::c_int,
+        _pad: [0; 20],
+    };
     write_name(&mut mtu_req.name, name)?;
     if unsafe { libc::ioctl(sfd, SIOCSIFMTU, &mut mtu_req as *mut _) } < 0 {
         return Err(io::Error::last_os_error());
     }
 
     // Read current flags, add UP|RUNNING, write them back.
-    let mut flags_req = IfReqShort { name: [0; 16], data: 0, _pad: [0; 22] };
+    let mut flags_req = IfReqShort {
+        name: [0; 16],
+        data: 0,
+        _pad: [0; 22],
+    };
     write_name(&mut flags_req.name, name)?;
     if unsafe { libc::ioctl(sfd, SIOCGIFFLAGS, &mut flags_req as *mut _) } < 0 {
         return Err(io::Error::last_os_error());
@@ -175,7 +204,12 @@ mod tests {
 
     #[test]
     fn rejects_overlong_interface_name() {
-        let err = create("this-name-is-way-too-long", "10.9.9.1/24".parse().unwrap(), 1300).unwrap_err();
+        let err = create(
+            "this-name-is-way-too-long",
+            "10.9.9.1/24".parse().unwrap(),
+            1300,
+        )
+        .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 

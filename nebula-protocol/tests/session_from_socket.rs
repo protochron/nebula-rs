@@ -9,7 +9,11 @@ use nebula_protocol::handshake::Cipher;
 use nebula_protocol::session::{Session, SessionConfig};
 
 fn fixture(name: &str) -> Vec<u8> {
-    std::fs::read(format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap()
+    std::fs::read(format!(
+        "{}/tests/fixtures/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap()
 }
 
 fn bound_std_socket() -> std::net::UdpSocket {

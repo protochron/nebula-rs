@@ -20,8 +20,8 @@
 //!   in noise.go, set per-cipher in pki.go). Both are 4 zero bytes followed
 //!   by the 8-byte counter.
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::Aes256Gcm;
+use aes_gcm::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::ChaCha20Poly1305;
 
 use crate::error::Error;
@@ -41,7 +41,10 @@ pub struct ReplayWindow {
 
 impl ReplayWindow {
     pub fn new() -> Self {
-        Self { current: 0, seen: [0; 16] }
+        Self {
+            current: 0,
+            seen: [0; 16],
+        }
     }
 
     /// Returns `true` and marks `counter` as seen if it's new; `false` if
@@ -108,7 +111,9 @@ impl CipherImpl {
     fn new(cipher: Cipher, key: &[u8; 32]) -> Self {
         match cipher {
             Cipher::AesGcm => CipherImpl::AesGcm(Box::new(Aes256Gcm::new(key.into()))),
-            Cipher::ChaChaPoly => CipherImpl::ChaChaPoly(Box::new(ChaCha20Poly1305::new(key.into()))),
+            Cipher::ChaChaPoly => {
+                CipherImpl::ChaChaPoly(Box::new(ChaCha20Poly1305::new(key.into())))
+            }
         }
     }
 
@@ -125,7 +130,10 @@ impl CipherImpl {
 
     fn encrypt(&self, counter: u64, aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
         let nonce = self.nonce(counter);
-        let payload = Payload { msg: plaintext, aad };
+        let payload = Payload {
+            msg: plaintext,
+            aad,
+        };
         match self {
             CipherImpl::AesGcm(c) => c.encrypt(&nonce.into(), payload),
             CipherImpl::ChaChaPoly(c) => c.encrypt(&nonce.into(), payload),
@@ -135,7 +143,10 @@ impl CipherImpl {
 
     fn decrypt(&self, counter: u64, aad: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, Error> {
         let nonce = self.nonce(counter);
-        let payload = Payload { msg: ciphertext, aad };
+        let payload = Payload {
+            msg: ciphertext,
+            aad,
+        };
         match self {
             CipherImpl::AesGcm(c) => c.decrypt(&nonce.into(), payload),
             CipherImpl::ChaChaPoly(c) => c.decrypt(&nonce.into(), payload),
@@ -188,7 +199,13 @@ impl Transport {
 
     /// `aad` must be the exact 16-byte wire header (with `counter` already
     /// embedded in its `message_counter` field).
-    pub fn encrypt(&self, counter: u64, aad: &[u8], plaintext: &[u8], out: &mut [u8]) -> Result<usize, Error> {
+    pub fn encrypt(
+        &self,
+        counter: u64,
+        aad: &[u8],
+        plaintext: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, Error> {
         let ciphertext = self.send_cipher.encrypt(counter, aad, plaintext)?;
         out[..ciphertext.len()].copy_from_slice(&ciphertext);
         Ok(ciphertext.len())
@@ -197,7 +214,13 @@ impl Transport {
     /// `aad` must be the exact 16 raw header bytes as received on the
     /// wire, not a re-encoding of a parsed `Header` — nebula authenticates
     /// the literal bytes.
-    pub fn decrypt(&mut self, counter: u64, aad: &[u8], ciphertext: &[u8], out: &mut [u8]) -> Result<usize, Error> {
+    pub fn decrypt(
+        &mut self,
+        counter: u64,
+        aad: &[u8],
+        ciphertext: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, Error> {
         if !self.replay.check_and_update(counter) {
             return Err(Error::ReplayedPacket);
         }
@@ -253,13 +276,21 @@ mod tests {
         let aad = b"fake-16-byte-hdr";
         let counter = a_transport.next_counter();
         let mut ciphertext = vec![0u8; 128];
-        let len = a_transport.encrypt(counter, aad, b"hello world", &mut ciphertext).unwrap();
+        let len = a_transport
+            .encrypt(counter, aad, b"hello world", &mut ciphertext)
+            .unwrap();
         let mut plaintext = vec![0u8; 128];
-        let plen = b_transport.decrypt(counter, aad, &ciphertext[..len], &mut plaintext).unwrap();
+        let plen = b_transport
+            .decrypt(counter, aad, &ciphertext[..len], &mut plaintext)
+            .unwrap();
         assert_eq!(&plaintext[..plen], b"hello world");
 
         // A replay of the same counter must be rejected.
-        assert!(b_transport.decrypt(counter, aad, &ciphertext[..len], &mut plaintext).is_err());
+        assert!(
+            b_transport
+                .decrypt(counter, aad, &ciphertext[..len], &mut plaintext)
+                .is_err()
+        );
     }
 
     #[test]
@@ -270,8 +301,14 @@ mod tests {
         let mut b_transport = Transport::new(Cipher::ChaChaPoly, b_key, a_key);
 
         let mut ciphertext = vec![0u8; 128];
-        let len = a_transport.encrypt(3, b"correct-header-x", b"payload", &mut ciphertext).unwrap();
+        let len = a_transport
+            .encrypt(3, b"correct-header-x", b"payload", &mut ciphertext)
+            .unwrap();
         let mut plaintext = vec![0u8; 128];
-        assert!(b_transport.decrypt(3, b"wrong-header-byte", &ciphertext[..len], &mut plaintext).is_err());
+        assert!(
+            b_transport
+                .decrypt(3, b"wrong-header-byte", &ciphertext[..len], &mut plaintext)
+                .is_err()
+        );
     }
 }

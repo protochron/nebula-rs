@@ -105,18 +105,36 @@ async fn real_host_discovers_and_pings_us_via_lighthouse_registration() {
             .expect("should receive an ICMP echo request from host2 within 8s")
             .expect("recv should succeed");
         assert_eq!(from, IpAddr::V4(host2));
-        assert!(request.len() >= 21, "request too short to be an IP+ICMP packet: {} bytes", request.len());
-        assert_eq!(request[20], 8, "expected ICMP type 8 (echo request), got {}", request[20]);
+        assert!(
+            request.len() >= 21,
+            "request too short to be an IP+ICMP packet: {} bytes",
+            request.len()
+        );
+        assert_eq!(
+            request[20], 8,
+            "expected ICMP type 8 (echo request), got {}",
+            request[20]
+        );
 
         let reply = build_icmp_echo_reply(&request, rust_peer, host2);
-        session.send(from, &reply).await.expect("echo reply send should succeed");
+        session
+            .send(from, &reply)
+            .await
+            .expect("echo reply send should succeed");
     });
 
     // `docker exec ... ping` blocks the calling OS thread; run it on the
     // blocking pool so the responder task above keeps polling concurrently.
     let ping_status = tokio::task::spawn_blocking(|| {
         Command::new("docker")
-            .args(["exec", "nebula-protocol-interop-host2", "ping", "-c1", "-W5", "10.100.0.3"])
+            .args([
+                "exec",
+                "nebula-protocol-interop-host2",
+                "ping",
+                "-c1",
+                "-W5",
+                "10.100.0.3",
+            ])
             .status()
     })
     .await
@@ -128,7 +146,14 @@ async fn real_host_discovers_and_pings_us_via_lighthouse_registration() {
     // failed" (e.g. it names exactly which assertion about the request broke).
     responder.await.expect("responder task should not panic");
 
-    Command::new("bash").arg("cleanup.sh").current_dir(&harness).status().ok();
+    Command::new("bash")
+        .arg("cleanup.sh")
+        .current_dir(&harness)
+        .status()
+        .ok();
 
-    assert!(ping_status.success(), "host2 should discover and reach the Rust peer purely via lighthouse registration");
+    assert!(
+        ping_status.success(),
+        "host2 should discover and reach the Rust peer purely via lighthouse registration"
+    );
 }

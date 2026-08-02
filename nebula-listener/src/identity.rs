@@ -42,7 +42,10 @@ mod tests {
     use std::net::IpAddr;
 
     fn net(addr: &str, prefix_len: u8) -> Network {
-        Network { addr: addr.parse::<IpAddr>().unwrap(), prefix_len }
+        Network {
+            addr: addr.parse::<IpAddr>().unwrap(),
+            prefix_len,
+        }
     }
 
     #[test]
@@ -60,9 +63,15 @@ mod tests {
         assert_eq!(id.ca_name, "my-ca");
         assert_eq!(id.ca_sha, "deadbeef");
         // /16 cert network → /32 host route (exact-match ownership).
-        assert_eq!(id.vpn_networks, vec!["10.100.0.3/32".parse::<IpNet>().unwrap()]);
+        assert_eq!(
+            id.vpn_networks,
+            vec!["10.100.0.3/32".parse::<IpNet>().unwrap()]
+        );
         // unsafe network keeps its full prefix.
-        assert_eq!(id.unsafe_networks, vec!["192.168.9.0/24".parse::<IpNet>().unwrap()]);
+        assert_eq!(
+            id.unsafe_networks,
+            vec!["192.168.9.0/24".parse::<IpNet>().unwrap()]
+        );
         // The firewall's ownership check reflects the host-route semantics.
         assert!(id.owns("10.100.0.3".parse().unwrap()));
         assert!(!id.owns("10.100.0.4".parse().unwrap()));
@@ -78,8 +87,14 @@ mod tests {
             unsafe_networks: vec![net("fd99::", 64)],
         };
         let id = peer_identity(&info, "ca", "sha");
-        assert_eq!(id.vpn_networks, vec!["fd00::3/128".parse::<IpNet>().unwrap()]);
-        assert_eq!(id.unsafe_networks, vec!["fd99::/64".parse::<IpNet>().unwrap()]);
+        assert_eq!(
+            id.vpn_networks,
+            vec!["fd00::3/128".parse::<IpNet>().unwrap()]
+        );
+        assert_eq!(
+            id.unsafe_networks,
+            vec!["fd99::/64".parse::<IpNet>().unwrap()]
+        );
         assert!(id.owns("fd00::3".parse().unwrap()));
         assert!(!id.owns("fd00::4".parse().unwrap()));
     }

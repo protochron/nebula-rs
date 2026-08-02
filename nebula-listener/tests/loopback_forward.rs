@@ -8,7 +8,9 @@ use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixDatagram;
 use std::time::Duration;
 
-use nebula_firewall::{FirewallOptions, LocalCidrSpec, PortSpec, Protocol, RuleSet, RuleSetBuilder};
+use nebula_firewall::{
+    FirewallOptions, LocalCidrSpec, PortSpec, Protocol, RuleSet, RuleSetBuilder,
+};
 use nebula_protocol::handshake::Cipher;
 use nebula_protocol::session::{Session, SessionConfig};
 
@@ -17,15 +19,28 @@ use nebula_listener::{Listener, ListenerConfig};
 
 fn fixture(name: &str) -> Vec<u8> {
     // Reuse nebula-protocol's committed test certs.
-    let base = concat!(env!("CARGO_MANIFEST_DIR"), "/../nebula-protocol/tests/fixtures");
+    let base = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../nebula-protocol/tests/fixtures"
+    );
     std::fs::read(format!("{base}/{name}")).unwrap()
 }
 
 fn allow_any(assigned: Vec<IpNet>) -> RuleSet {
     let mut b = RuleSetBuilder::new(assigned, false, true);
     for incoming in [true, false] {
-        b.add_rule(incoming, Protocol::Any, PortSpec::Any, vec![], None, None, LocalCidrSpec::Any, None, None)
-            .unwrap();
+        b.add_rule(
+            incoming,
+            Protocol::Any,
+            PortSpec::Any,
+            vec![],
+            None,
+            None,
+            LocalCidrSpec::Any,
+            None,
+            None,
+        )
+        .unwrap();
     }
     b.build()
 }
@@ -151,10 +166,15 @@ async fn packet_injected_into_node_a_tun_arrives_on_node_b_tun() {
     // Inject an IP packet on A's tun destined for B. A forwards it over the
     // (already-established) tunnel; B's mesh→tun path writes it to B's tun.
     a_tun_test
-        .send(&udp_packet(Ipv4Addr::new(10, 100, 0, 1), Ipv4Addr::new(10, 100, 0, 2)))
+        .send(&udp_packet(
+            Ipv4Addr::new(10, 100, 0, 1),
+            Ipv4Addr::new(10, 100, 0, 2),
+        ))
         .unwrap();
 
-    b_tun_test.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    b_tun_test
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     let mut buf = [0u8; 2048];
     let n = tokio::task::spawn_blocking(move || b_tun_test.recv(&mut buf).map(|n| (n, buf)))
         .await
@@ -242,15 +262,23 @@ async fn multicast_destined_packets_do_not_block_real_traffic() {
 
     // A bogus multicast-destined packet, then a real one right behind it.
     a_tun_test
-        .send(&udp_packet(Ipv4Addr::new(10, 100, 0, 1), Ipv4Addr::new(224, 0, 0, 251)))
+        .send(&udp_packet(
+            Ipv4Addr::new(10, 100, 0, 1),
+            Ipv4Addr::new(224, 0, 0, 251),
+        ))
         .unwrap();
     a_tun_test
-        .send(&udp_packet(Ipv4Addr::new(10, 100, 0, 1), Ipv4Addr::new(10, 100, 0, 2)))
+        .send(&udp_packet(
+            Ipv4Addr::new(10, 100, 0, 1),
+            Ipv4Addr::new(10, 100, 0, 2),
+        ))
         .unwrap();
 
     // Well under connect()'s 5s handshake timeout: this only passes if the
     // multicast packet didn't block the loop.
-    b_tun_test.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    b_tun_test
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
     let mut buf = [0u8; 2048];
     let n = tokio::task::spawn_blocking(move || b_tun_test.recv(&mut buf).map(|n| (n, buf)))
         .await

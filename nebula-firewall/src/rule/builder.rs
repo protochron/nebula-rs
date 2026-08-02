@@ -39,16 +39,33 @@ pub enum RuleError {
 /// These never block [`RuleSetBuilder::build`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RuleWarning {
-    GroupsShadowedByAny { incoming: bool },
-    HostAnyShadowsGroups { incoming: bool, groups: Vec<String> },
-    HostAnyShadowsCidr { incoming: bool, cidr: IpNet },
-    GroupsAnyShadowsHost { incoming: bool, host: String },
-    GroupsAnyShadowsCidr { incoming: bool, cidr: IpNet },
+    GroupsShadowedByAny {
+        incoming: bool,
+    },
+    HostAnyShadowsGroups {
+        incoming: bool,
+        groups: Vec<String>,
+    },
+    HostAnyShadowsCidr {
+        incoming: bool,
+        cidr: IpNet,
+    },
+    GroupsAnyShadowsHost {
+        incoming: bool,
+        host: String,
+    },
+    GroupsAnyShadowsCidr {
+        incoming: bool,
+        cidr: IpNet,
+    },
     /// A port was given on an ICMP/ICMPv6 rule. ICMP has no ports, so the
     /// rule is filed under `PortSpec::Any` instead of the requested port —
     /// otherwise it could never match. Mirrors Go's "ignoring port
     /// specification for ICMP firewall rule" warning.
-    IcmpPortIgnored { incoming: bool, port: PortSpec },
+    IcmpPortIgnored {
+        incoming: bool,
+        port: PortSpec,
+    },
 }
 
 enum LocalCidrDefault {

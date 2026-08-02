@@ -25,20 +25,40 @@ fn go_host2_pings_rust_node_across_the_live_mesh() {
 
     let dir = harness_dir();
     // Always start clean.
-    let _ = Command::new("bash").arg("teardown.sh").current_dir(&dir).status();
+    let _ = Command::new("bash")
+        .arg("teardown.sh")
+        .current_dir(&dir)
+        .status();
 
-    let setup = Command::new("bash").arg("setup.sh").current_dir(&dir).status().expect("setup.sh should run");
+    let setup = Command::new("bash")
+        .arg("setup.sh")
+        .current_dir(&dir)
+        .status()
+        .expect("setup.sh should run");
     assert!(setup.success(), "netns + mesh setup failed");
 
     // Go host2 (10.100.0.2) pings the Rust node (10.100.0.3). Success proves
     // the full path: lighthouse-assisted handshake + tun + firewall + tunnel.
     let ping = Command::new("docker")
-        .args(["exec", "nebula-protocol-interop-host2", "ping", "-c1", "-W5", "10.100.0.3"])
+        .args([
+            "exec",
+            "nebula-protocol-interop-host2",
+            "ping",
+            "-c1",
+            "-W5",
+            "10.100.0.3",
+        ])
         .status()
         .expect("docker exec ping should run");
 
     // Tear down before asserting so a failure still cleans up.
-    let _ = Command::new("bash").arg("teardown.sh").current_dir(&dir).status();
+    let _ = Command::new("bash")
+        .arg("teardown.sh")
+        .current_dir(&dir)
+        .status();
 
-    assert!(ping.success(), "Go host2 should be able to ping the Rust node over the live mesh");
+    assert!(
+        ping.success(),
+        "Go host2 should be able to ping the Rust node over the live mesh"
+    );
 }

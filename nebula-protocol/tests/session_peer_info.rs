@@ -7,7 +7,11 @@ use nebula_protocol::handshake::Cipher;
 use nebula_protocol::session::{Session, SessionConfig};
 
 fn fixture(name: &str) -> Vec<u8> {
-    std::fs::read(format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap()
+    std::fs::read(format!(
+        "{}/tests/fixtures/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap()
 }
 
 #[tokio::test]
@@ -45,7 +49,10 @@ async fn peer_info_returns_verified_identity_after_handshake() {
 
     b.connect(a_vpn).await.expect("handshake should complete");
 
-    let info = b.peer_info(a_vpn).await.expect("peer identity known after handshake");
+    let info = b
+        .peer_info(a_vpn)
+        .await
+        .expect("peer identity known after handshake");
     assert_eq!(info.name, "host-a");
     assert_eq!(info.groups, vec!["test".to_string()]);
     assert_eq!(info.networks.len(), 1);

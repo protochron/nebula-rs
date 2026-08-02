@@ -145,7 +145,9 @@ async fn tun_to_mesh(shared: Arc<Shared>) -> io::Result<()> {
     loop {
         let n = read_fd(&shared.tun, &mut buf).await?;
         let raw = &buf[..n];
-        let Some(fw_pkt) = packet::parse(raw, false) else { continue };
+        let Some(fw_pkt) = packet::parse(raw, false) else {
+            continue;
+        };
         let dst = fw_pkt.remote_addr; // outbound: remote == destination vpn addr
 
         // Ensure a tunnel exists before we can look the peer up. Multicast
@@ -162,7 +164,9 @@ async fn tun_to_mesh(shared: Arc<Shared>) -> io::Result<()> {
                 continue;
             }
         }
-        let Some(info) = shared.session.peer_info(dst).await else { continue };
+        let Some(info) = shared.session.peer_info(dst).await else {
+            continue;
+        };
         let peer = identity::peer_identity(&info, &shared.ca_name, &shared.ca_sha);
         if shared.firewall.evaluate(fw_pkt, false, &peer).is_ok() {
             let _ = shared.session.send(dst, raw).await;
@@ -177,8 +181,12 @@ async fn mesh_to_tun(shared: Arc<Shared>) -> io::Result<()> {
         let Ok((src, bytes)) = shared.session.recv().await else {
             return Ok(()); // session closed
         };
-        let Some(fw_pkt) = packet::parse(&bytes, true) else { continue };
-        let Some(info) = shared.session.peer_info(src).await else { continue };
+        let Some(fw_pkt) = packet::parse(&bytes, true) else {
+            continue;
+        };
+        let Some(info) = shared.session.peer_info(src).await else {
+            continue;
+        };
         let peer = identity::peer_identity(&info, &shared.ca_name, &shared.ca_sha);
         if shared.firewall.evaluate(fw_pkt, true, &peer).is_ok() {
             let _ = write_fd(&shared.tun, &bytes).await;
